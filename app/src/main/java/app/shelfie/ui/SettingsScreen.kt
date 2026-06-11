@@ -19,6 +19,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -37,7 +38,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun SettingsScreen(app: ShelfieApp, onBack: () -> Unit) {
+fun SettingsScreen(app: ShelfieApp, onOpenDownloads: () -> Unit, onBack: () -> Unit) {
     val credentials by app.settings.credentials.collectAsState(initial = null)
     val scope = rememberCoroutineScope()
 
@@ -69,6 +70,29 @@ fun SettingsScreen(app: ShelfieApp, onBack: () -> Unit) {
             SettingsLine("Server", credentials?.serverUrl?.ifBlank { "—" } ?: "—")
         }
 
+        SettingsCard(title = "Playback") {
+            val autoPlay by app.settings.autoPlay.collectAsState(initial = true)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Auto play", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Continue to the next episode automatically",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = autoPlay,
+                    onCheckedChange = { enabled ->
+                        scope.launch { app.settings.setAutoPlay(enabled) }
+                    },
+                )
+            }
+        }
+
         SettingsCard(title = "Listening stats") {
             SettingsLine(
                 "Total listening time",
@@ -78,6 +102,25 @@ fun SettingsScreen(app: ShelfieApp, onBack: () -> Unit) {
                 "Today",
                 stats?.let { formatListeningTime(it.today) } ?: "—",
             )
+        }
+
+        val downloads by app.downloads.completed.collectAsState()
+        val activeDownloads by app.downloads.active.collectAsState()
+        OutlinedButton(
+            onClick = onOpenDownloads,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+        ) {
+            val label = buildString {
+                append("Downloads")
+                if (activeDownloads.isNotEmpty()) {
+                    append(" • ${activeDownloads.size} in progress")
+                } else if (downloads.isNotEmpty()) {
+                    append(" • ${downloads.size} episodes (${formatBytes(downloads.sumOf { it.sizeBytes })})")
+                }
+            }
+            Text(label)
         }
 
         val context = LocalContext.current

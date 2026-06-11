@@ -18,8 +18,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.PlaylistAddCheck
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -28,8 +32,12 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -41,6 +49,7 @@ import androidx.media3.session.MediaController
 import app.shelfie.ShelfieApp
 import app.shelfie.data.LibraryItemExpanded
 import app.shelfie.data.PodcastEpisode
+import app.shelfie.playlist.PlaylistEntry
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -50,6 +59,12 @@ data class EpisodeRowData(
     val progressFraction: Float,
     val isFinished: Boolean,
 )
+
+sealed interface DownloadUi {
+    data object None : DownloadUi
+    data class InProgress(val fraction: Float) : DownloadUi
+    data object Done : DownloadUi
+}
 
 private sealed interface EpisodesUi {
     data object Loading : EpisodesUi
@@ -102,6 +117,18 @@ fun EpisodesScreen(
         }
 
         is EpisodesUi.Ready -> {
+            val activeDownloads by app.downloads.active.collectAsState()
+            val completedDownloads by app.downloads.completed.collectAsState()
+            val playlists by app.playlist.playlists.collectAsState()
+            var pickerEntry by remember { mutableStateOf<PlaylistEntry?>(null) }
+
+            pickerEntry?.let { entry ->
+                PlaylistPickerDialog(
+                    app = app,
+                    entry = entry,
+                    onDismiss = { pickerEntry = null },
+                )
+            }
             LazyColumn(Modifier.fillMaxSize()) {
                 item {
                     PodcastHeader(
@@ -111,8 +138,33 @@ fun EpisodesScreen(
                     )
                 }
                 items(state.episodes, key = { it.episode.id }) { row ->
+                    val downloadKey = app.downloads.key(itemId, row.episode.id)
+                    val downloadUi = when {
+                        completedDownloads.any { it.itemId == itemId && it.episodeId == row.episode.id } ->
+                            DownloadUi.Done
+
+                        activeDownloads.containsKey(downloadKey) ->
+                            DownloadUi.InProgress(activeDownloads[downloadKey]?.fraction ?: 0f)
+
+                        else -> DownloadUi.None
+                    }
                     EpisodeRow(
                         row = row,
+                        downloadUi = downloadUi,
+                        onDownload = { app.downloads.download(state.podcast, row.episode) },
+                        inPlaylist = playlists.any { playlist ->
+                            playlist.entries.any {
+                                it.itemId == itemId && it.episodeId == row.episode.id
+                            }
+                        },
+                        onTogglePlaylist = {
+                            pickerEntry = PlaylistEntry(
+                                itemId = itemId,
+                                episodeId = row.episode.id,
+                                title = row.episode.title ?: "Episode",
+                                podcastTitle = state.podcast.media.metadata.title ?: "",
+                            )
+                        },
                         isCurrent = playerState.mediaId == "episode:$itemId:${row.episode.id}",
                         isPlaying = playerState.isPlaying,
                         onClick = {
@@ -179,6 +231,10 @@ private fun PodcastHeader(podcast: LibraryItemExpanded, coverUrl: String, onBack
 @Composable
 private fun EpisodeRow(
     row: EpisodeRowData,
+    downloadUi: DownloadUi,
+    onDownload: () -> Unit,
+    inPlaylist: Boolean,
+    onTogglePlaylist: () -> Unit,
     isCurrent: Boolean,
     isPlaying: Boolean,
     onClick: () -> Unit,
@@ -217,7 +273,50 @@ private fun EpisodeRow(
                 )
             }
         }
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(4.dp))
+        IconButton(onClick = onTogglePlaylist) {
+            Icon(
+                if (inPlaylist) Icons.Filled.PlaylistAddCheck else Icons.Filled.PlaylistAdd,
+                contentDescription = if (inPlaylist) "Remove from playlist" else "Add to playlist",
+                tint = if (inPlaylist) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        when (downloadUi) {
+            is DownloadUi.None -> IconButton(onClick = onDownload) {
+                Icon(
+                    Icons.Filled.Download,
+                    contentDescription = "Download",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            is DownloadUi.InProgress -> Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(48.dp),
+            ) {
+                if (downloadUi.fraction > 0f) {
+                    CircularProgressIndicator(
+                        progress = { downloadUi.fraction },
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                }
+            }
+
+            is DownloadUi.Done -> Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(48.dp),
+            ) {
+                Icon(
+                    Icons.Filled.DownloadDone,
+                    contentDescription = "Downloaded",
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+        Spacer(Modifier.width(4.dp))
         when {
             row.isFinished && !isCurrent -> Icon(
                 Icons.Filled.CheckCircle,
