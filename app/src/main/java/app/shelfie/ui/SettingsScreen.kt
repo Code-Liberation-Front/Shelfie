@@ -2,6 +2,7 @@ package app.shelfie.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -31,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import app.shelfie.ShelfieApp
+import app.shelfie.data.Library
 import app.shelfie.data.ListeningStats
 import app.shelfie.ui.theme.ShelfieSurfaceHigh
 import kotlinx.coroutines.Dispatchers
@@ -68,6 +71,54 @@ fun SettingsScreen(app: ShelfieApp, onOpenDownloads: () -> Unit, onBack: () -> U
         SettingsCard(title = "Account") {
             SettingsLine("User", credentials?.username?.ifBlank { "—" } ?: "—")
             SettingsLine("Server", credentials?.serverUrl?.ifBlank { "—" } ?: "—")
+        }
+
+        SettingsCard(title = "Library") {
+            val libraries by produceState<List<Library>?>(initialValue = null) {
+                value = withContext(Dispatchers.IO) {
+                    runCatching {
+                        if (app.repository.ensureConfigured()) app.repository.podcastLibraries() else null
+                    }.getOrNull()
+                }
+            }
+            val available = libraries
+            when {
+                available == null -> SettingsLine("Podcast libraries", "Loading…")
+
+                available.isEmpty() -> SettingsLine("Podcast libraries", "None found")
+
+                else -> {
+                    val currentId = credentials?.libraryId
+                        ?.ifBlank { available.first().id }
+                        ?: available.first().id
+                    available.forEach { library ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    scope.launch {
+                                        runCatching { app.repository.selectLibrary(library.id) }
+                                    }
+                                }
+                                .padding(vertical = 8.dp),
+                        ) {
+                            Text(
+                                library.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (library.id == currentId) {
+                                Icon(
+                                    Icons.Filled.Check,
+                                    contentDescription = "Selected",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         SettingsCard(title = "Playback") {

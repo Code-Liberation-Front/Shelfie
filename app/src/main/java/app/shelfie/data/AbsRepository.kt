@@ -165,6 +165,19 @@ class AbsRepository(
         return podcastLibrary.id
     }
 
+    /** Podcast libraries available on the server. */
+    suspend fun podcastLibraries(): List<Library> =
+        requireApi().libraries().libraries.filter { it.mediaType == "podcast" }
+
+    /** Switches the active library and clears caches so the next loads use it. */
+    suspend fun selectLibrary(libraryId: String) {
+        settings.saveLibraryId(libraryId)
+        podcastsCache = emptyList()
+        itemCache.clear()
+        progressFetchedAt = 0
+        runCatching { cacheDir?.listFiles()?.forEach { it.delete() } }
+    }
+
     suspend fun podcasts(forceRefresh: Boolean = false): List<LibraryItemSummary> {
         if (!forceRefresh && podcastsCache.isNotEmpty()) return podcastsCache
         val items = try {
@@ -223,8 +236,8 @@ class AbsRepository(
     )
 
     /** Episodes the user has started but not finished, most recently played first. */
-    suspend fun continueListening(limit: Int = 15): List<InProgressEpisode> =
-        progressMap().values
+    suspend fun continueListening(limit: Int = 15, forceRefresh: Boolean = false): List<InProgressEpisode> =
+        progressMap(maxAgeMs = if (forceRefresh) 0 else 30_000).values
             .filter { it.episodeId != null && !it.isFinished && it.currentTime > 0 }
             .sortedByDescending { it.lastUpdate }
             .take(limit)
@@ -237,8 +250,8 @@ class AbsRepository(
             }
 
     /** Most recently added podcasts in the library. */
-    suspend fun recentlyAdded(limit: Int = 12): List<LibraryItemSummary> =
-        podcasts().sortedByDescending { it.addedAt }.take(limit)
+    suspend fun recentlyAdded(limit: Int = 12, forceRefresh: Boolean = false): List<LibraryItemSummary> =
+        podcasts(forceRefresh).sortedByDescending { it.addedAt }.take(limit)
 
     /** Newest episodes across the whole library, latest first. */
     suspend fun latestEpisodes(limit: Int = 75): List<PodcastEpisode> = try {

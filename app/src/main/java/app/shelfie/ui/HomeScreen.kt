@@ -16,12 +16,19 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,21 +52,25 @@ private sealed interface HomeUi {
     ) : HomeUi
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     app: ShelfieApp,
     controller: MediaController?,
     onOpenPodcast: (String) -> Unit,
 ) {
-    val ui by produceState<HomeUi>(initialValue = HomeUi.Loading) {
+    var refreshKey by remember { mutableIntStateOf(0) }
+    var isRefreshing by remember { mutableStateOf(false) }
+    val ui by produceState<HomeUi>(initialValue = HomeUi.Loading, refreshKey) {
+        val force = refreshKey > 0
         value = withContext(Dispatchers.IO) {
             try {
                 if (!app.repository.ensureConfigured()) {
                     HomeUi.Error("Not logged in")
                 } else {
                     HomeUi.Ready(
-                        inProgress = app.repository.continueListening(limit = 12),
-                        recentlyAdded = app.repository.recentlyAdded(),
+                        inProgress = app.repository.continueListening(limit = 12, forceRefresh = force),
+                        recentlyAdded = app.repository.recentlyAdded(forceRefresh = force),
                     )
                 }
             } catch (e: Exception) {
@@ -67,7 +78,29 @@ fun HomeScreen(
             }
         }
     }
+    LaunchedEffect(ui) {
+        if (ui !is HomeUi.Loading) isRefreshing = false
+    }
 
+    PullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = {
+            isRefreshing = true
+            refreshKey++
+        },
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        HomeContent(app, controller, onOpenPodcast, ui)
+    }
+}
+
+@Composable
+private fun HomeContent(
+    app: ShelfieApp,
+    controller: MediaController?,
+    onOpenPodcast: (String) -> Unit,
+    ui: HomeUi,
+) {
     when (val state = ui) {
         is HomeUi.Loading -> {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
