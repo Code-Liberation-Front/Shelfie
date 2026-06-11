@@ -49,7 +49,6 @@ import androidx.media3.session.MediaController
 import app.shelfie.ShelfieApp
 import app.shelfie.data.PodcastEpisode
 import app.shelfie.playlist.PlaylistEntry
-import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -232,7 +231,7 @@ private fun LatestEpisodeRow(
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
-        AsyncImage(
+        CoverImage(
             model = coverUrl,
             contentDescription = null,
             contentScale = ContentScale.Crop,

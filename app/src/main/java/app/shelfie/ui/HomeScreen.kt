@@ -38,7 +38,6 @@ import androidx.media3.session.MediaController
 import app.shelfie.ShelfieApp
 import app.shelfie.data.AbsRepository
 import app.shelfie.data.LibraryItemSummary
-import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -194,7 +193,7 @@ private fun ContinueCard(
             .width(150.dp)
             .clickable(onClick = onClick),
     ) {
-        AsyncImage(
+        CoverImage(
             model = coverUrl,
             contentDescription = entry.episode.title,
             contentScale = ContentScale.Crop,
@@ -238,7 +237,7 @@ private fun RecentPodcastCard(
             .width(150.dp)
             .clickable(onClick = onClick),
     ) {
-        AsyncImage(
+        CoverImage(
             model = coverUrl,
             contentDescription = podcast.media.metadata.title,
             contentScale = ContentScale.Crop,

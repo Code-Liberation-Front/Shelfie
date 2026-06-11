@@ -30,7 +30,7 @@ Grab the APK one of two ways:
 
 Sideload it by enabling *Install unknown apps* for your browser/file manager, then opening the APK.
 
-> The APK is currently debug-signed. When updating you can install over the previous build as long as both came from CI; if signatures ever mismatch, uninstall first.
+> All CI builds are signed with a shared key committed to the repo, so newer APKs install directly over older ones. If you installed a build from before this key existed (≤ v0.8.1), uninstall once — after that, updates apply in place.
 
 ## Android Auto
 

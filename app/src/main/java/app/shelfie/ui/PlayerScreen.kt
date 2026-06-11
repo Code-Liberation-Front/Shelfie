@@ -50,7 +50,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.media3.session.MediaController
 import app.shelfie.ui.theme.ShelfieSurface
-import coil.compose.AsyncImage
 
 private val SPEED_OPTIONS = listOf(0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)
 
@@ -82,7 +81,7 @@ fun PlayerScreen(
         }
         Spacer(Modifier.height(8.dp))
 
-        AsyncImage(
+        CoverImage(
             model = state.artworkUri,
             contentDescription = null,
             contentScale = ContentScale.Crop,
@@ -245,7 +244,7 @@ fun NowPlayingBar(
             .clickable(onClick = onExpand)
             .padding(horizontal = 12.dp, vertical = 8.dp),
     ) {
-        AsyncImage(
+        CoverImage(
             model = state.artworkUri,
             contentDescription = null,
             contentScale = ContentScale.Crop,

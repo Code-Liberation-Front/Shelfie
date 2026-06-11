@@ -37,7 +37,6 @@ import app.shelfie.ShelfieApp
 import app.shelfie.data.LibraryItemExpanded
 import app.shelfie.data.LibraryItemSummary
 import app.shelfie.data.PodcastEpisode
-import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -178,7 +177,7 @@ private fun PodcastResultRow(title: String, author: String, coverUrl: String, on
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
-        AsyncImage(
+        CoverImage(
             model = coverUrl,
             contentDescription = null,
             contentScale = ContentScale.Crop,
@@ -215,7 +214,7 @@ private fun EpisodeResultRow(
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
-        AsyncImage(
+        CoverImage(
             model = coverUrl,
             contentDescription = null,
             contentScale = ContentScale.Crop,

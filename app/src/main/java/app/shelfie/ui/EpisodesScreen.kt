@@ -51,7 +51,6 @@ import app.shelfie.ShelfieApp
 import app.shelfie.data.LibraryItemExpanded
 import app.shelfie.data.PodcastEpisode
 import app.shelfie.playlist.PlaylistEntry
-import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -218,7 +217,7 @@ private fun PodcastHeader(podcast: LibraryItemExpanded, coverUrl: String, onBack
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            AsyncImage(
+            CoverImage(
                 model = coverUrl,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,

@@ -34,7 +34,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.shelfie.ShelfieApp
 import app.shelfie.data.LibraryItemSummary
-import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -126,7 +125,7 @@ private fun PodcastsContent(
 @Composable
 private fun PodcastCard(podcast: LibraryItemSummary, coverUrl: String, onClick: () -> Unit) {
     Column(modifier = Modifier.clickable(onClick = onClick)) {
-        AsyncImage(
+        CoverImage(
             model = coverUrl,
             contentDescription = podcast.media.metadata.title,
             contentScale = ContentScale.Crop,

@@ -3,6 +3,7 @@ package app.shelfie.ui
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,9 +15,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -26,8 +30,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -91,35 +98,52 @@ fun SettingsScreen(app: ShelfieApp, onOpenDownloads: () -> Unit, onBack: () -> U
                     val currentId = credentials?.libraryId
                         ?.ifBlank { available.first().id }
                         ?: available.first().id
-                    available.forEach { library ->
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    scope.launch {
-                                        runCatching { app.repository.selectLibrary(library.id) }
-                                    }
-                                }
-                                .padding(vertical = 8.dp),
+                    val current = available.firstOrNull { it.id == currentId } ?: available.first()
+                    var menuOpen by remember { mutableStateOf(false) }
+                    Box {
+                        OutlinedButton(
+                            onClick = { menuOpen = true },
+                            modifier = Modifier.fillMaxWidth(),
                         ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(library.name, style = MaterialTheme.typography.bodyMedium)
-                                Text(
-                                    when (library.mediaType) {
-                                        "podcast" -> "Podcasts"
-                                        "book" -> "Audiobooks"
-                                        else -> library.mediaType.replaceFirstChar { it.uppercase() }
+                            Text(
+                                "${current.name} (${libraryTypeLabel(current.mediaType)})",
+                                modifier = Modifier.weight(1f),
+                            )
+                            Icon(Icons.Filled.ArrowDropDown, contentDescription = "Choose library")
+                        }
+                        DropdownMenu(
+                            expanded = menuOpen,
+                            onDismissRequest = { menuOpen = false },
+                        ) {
+                            available.forEach { library ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(library.name)
+                                            Text(
+                                                libraryTypeLabel(library.mediaType),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
                                     },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            if (library.id == currentId) {
-                                Icon(
-                                    Icons.Filled.Check,
-                                    contentDescription = "Selected",
-                                    tint = MaterialTheme.colorScheme.primary,
+                                    trailingIcon = if (library.id == currentId) {
+                                        {
+                                            Icon(
+                                                Icons.Filled.Check,
+                                                contentDescription = "Selected",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                            )
+                                        }
+                                    } else {
+                                        null
+                                    },
+                                    onClick = {
+                                        menuOpen = false
+                                        scope.launch {
+                                            runCatching { app.repository.selectLibrary(library.id) }
+                                        }
+                                    },
                                 )
                             }
                         }
@@ -217,6 +241,12 @@ fun SettingsScreen(app: ShelfieApp, onOpenDownloads: () -> Unit, onBack: () -> U
             modifier = Modifier.padding(horizontal = 16.dp),
         )
     }
+}
+
+private fun libraryTypeLabel(mediaType: String): String = when (mediaType) {
+    "podcast" -> "Podcasts"
+    "book" -> "Audiobooks"
+    else -> mediaType.replaceFirstChar { it.uppercase() }
 }
 
 @Composable

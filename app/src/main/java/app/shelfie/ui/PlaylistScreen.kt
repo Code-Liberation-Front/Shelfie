@@ -60,7 +60,6 @@ import androidx.media3.common.MediaItem
 import androidx.media3.session.MediaController
 import app.shelfie.ShelfieApp
 import app.shelfie.playlist.PlaylistEntry
-import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -442,7 +441,7 @@ private fun AddEpisodesPane(
                                 .clickable { app.playlist.toggleIn(playlistId, entry) }
                                 .padding(horizontal = 16.dp, vertical = 8.dp),
                         ) {
-                            AsyncImage(
+                            CoverImage(
                                 model = coverUrl,
                                 contentDescription = null,
                                 contentScale = ContentScale.Crop,
@@ -509,7 +508,7 @@ private fun PlaylistRow(
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
-        AsyncImage(
+        CoverImage(
             model = coverUrl,
             contentDescription = null,
             contentScale = ContentScale.Crop,
