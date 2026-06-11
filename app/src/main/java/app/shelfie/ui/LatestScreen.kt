@@ -15,17 +15,30 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.PlaylistAddCheck
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -35,8 +48,9 @@ import androidx.compose.ui.unit.dp
 import androidx.media3.session.MediaController
 import app.shelfie.ShelfieApp
 import app.shelfie.data.PodcastEpisode
-import coil.compose.AsyncImage
+import app.shelfie.playlist.PlaylistEntry
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 data class EpisodeProgressUi(val fraction: Float, val isFinished: Boolean)
@@ -51,20 +65,24 @@ private sealed interface LatestUi {
     ) : LatestUi
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LatestScreen(
     app: ShelfieApp,
     controller: MediaController?,
     playerState: PlayerUiState,
 ) {
-    val ui by produceState<LatestUi>(initialValue = LatestUi.Loading) {
+    var refreshKey by remember { mutableIntStateOf(0) }
+    var isRefreshing by remember { mutableStateOf(false) }
+    val ui by produceState<LatestUi>(initialValue = LatestUi.Loading, refreshKey) {
+        val force = refreshKey > 0
         value = withContext(Dispatchers.IO) {
             try {
                 if (!app.repository.ensureConfigured()) {
                     LatestUi.Error("Not logged in")
                 } else {
-                    val episodes = app.repository.latestEpisodes()
-                    val titles = app.repository.podcasts()
+                    val episodes = app.repository.latestEpisodes(forceRefresh = force)
+                    val titles = app.repository.podcasts(forceRefresh = force)
                         .associate { it.id to (it.media.metadata.title ?: "") }
                     val progress = episodes.associate { episode ->
                         val saved = runCatching {
@@ -81,8 +99,28 @@ fun LatestScreen(
                 LatestUi.Error(e.message ?: "Failed to load latest episodes")
             }
         }
+        isRefreshing = false
     }
 
+    PullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = {
+            isRefreshing = true
+            refreshKey++
+        },
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        LatestContent(app, controller, playerState, ui)
+    }
+}
+
+@Composable
+private fun LatestContent(
+    app: ShelfieApp,
+    controller: MediaController?,
+    playerState: PlayerUiState,
+    ui: LatestUi,
+) {
     when (val state = ui) {
         is LatestUi.Loading -> {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -97,15 +135,64 @@ fun LatestScreen(
         }
 
         is LatestUi.Ready -> {
+            val scope = rememberCoroutineScope()
+            val activeDownloads by app.downloads.active.collectAsState()
+            val completedDownloads by app.downloads.completed.collectAsState()
+            val playlists by app.playlist.playlists.collectAsState()
+            var pickerEntry by remember { mutableStateOf<PlaylistEntry?>(null) }
+
+            pickerEntry?.let { entry ->
+                PlaylistPickerDialog(
+                    app = app,
+                    entry = entry,
+                    onDismiss = { pickerEntry = null },
+                )
+            }
+
             LazyColumn(Modifier.fillMaxSize()) {
                 items(state.episodes, key = { it.id }) { episode ->
+                    val downloadKey = app.downloads.key(episode.libraryItemId, episode.id)
+                    val downloadUi = when {
+                        completedDownloads.any {
+                            it.itemId == episode.libraryItemId && it.episodeId == episode.id
+                        } -> DownloadUi.Done
+
+                        activeDownloads.containsKey(downloadKey) ->
+                            DownloadUi.InProgress(activeDownloads[downloadKey]?.fraction ?: 0f)
+
+                        else -> DownloadUi.None
+                    }
+                    val podcastTitle = state.podcastTitles[episode.libraryItemId] ?: ""
                     LatestEpisodeRow(
                         episode = episode,
                         progress = state.progress[episode.id],
-                        podcastTitle = state.podcastTitles[episode.libraryItemId] ?: "",
+                        podcastTitle = podcastTitle,
                         coverUrl = app.repository.coverUrl(episode.libraryItemId),
                         isCurrent = playerState.mediaId == episodeMediaId(episode.libraryItemId, episode.id),
                         isPlaying = playerState.isPlaying,
+                        downloadUi = downloadUi,
+                        onDownload = {
+                            scope.launch(Dispatchers.IO) {
+                                runCatching {
+                                    val podcast = app.repository.podcast(episode.libraryItemId)
+                                    podcast.media.episodes.firstOrNull { it.id == episode.id }
+                                        ?.let { app.downloads.download(podcast, it) }
+                                }
+                            }
+                        },
+                        inPlaylist = playlists.any { playlist ->
+                            playlist.entries.any {
+                                it.itemId == episode.libraryItemId && it.episodeId == episode.id
+                            }
+                        },
+                        onTogglePlaylist = {
+                            pickerEntry = PlaylistEntry(
+                                itemId = episode.libraryItemId,
+                                episodeId = episode.id,
+                                title = episode.title ?: "Episode",
+                                podcastTitle = podcastTitle,
+                            )
+                        },
                         onClick = {
                             controller?.let { c ->
                                 if (playerState.mediaId == episodeMediaId(episode.libraryItemId, episode.id)) {
@@ -131,6 +218,10 @@ private fun LatestEpisodeRow(
     coverUrl: String,
     isCurrent: Boolean,
     isPlaying: Boolean,
+    downloadUi: DownloadUi,
+    onDownload: () -> Unit,
+    inPlaylist: Boolean,
+    onTogglePlaylist: () -> Unit,
     onClick: () -> Unit,
 ) {
     Row(
@@ -140,7 +231,7 @@ private fun LatestEpisodeRow(
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
-        AsyncImage(
+        CoverImage(
             model = coverUrl,
             contentDescription = null,
             contentScale = ContentScale.Crop,
@@ -161,7 +252,11 @@ private fun LatestEpisodeRow(
                 overflow = TextOverflow.Ellipsis,
             )
             val durationSec = (episode.audioTrack?.duration ?: episode.audioFile?.duration ?: 0.0).toLong()
-            val meta = listOf(podcastTitle, formatDate(episode.publishedAt), formatDuration(durationSec))
+            val meta = listOf(
+                podcastTitle,
+                formatEpisodeDate(episode.publishedAt, episode.pubDate),
+                formatDuration(durationSec),
+            )
                 .filter { it.isNotBlank() }
                 .joinToString(" • ")
             Text(
@@ -181,7 +276,50 @@ private fun LatestEpisodeRow(
                 )
             }
         }
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(4.dp))
+        IconButton(onClick = onTogglePlaylist) {
+            Icon(
+                if (inPlaylist) Icons.Filled.PlaylistAddCheck else Icons.Filled.PlaylistAdd,
+                contentDescription = if (inPlaylist) "In playlist" else "Add to playlist",
+                tint = if (inPlaylist) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        when (downloadUi) {
+            is DownloadUi.None -> IconButton(onClick = onDownload) {
+                Icon(
+                    Icons.Filled.Download,
+                    contentDescription = "Download",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            is DownloadUi.InProgress -> Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(48.dp),
+            ) {
+                if (downloadUi.fraction > 0f) {
+                    CircularProgressIndicator(
+                        progress = { downloadUi.fraction },
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.dp,
+                    )
+                } else {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                }
+            }
+
+            is DownloadUi.Done -> Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(48.dp),
+            ) {
+                Icon(
+                    Icons.Filled.DownloadDone,
+                    contentDescription = "Downloaded",
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+        Spacer(Modifier.width(4.dp))
         Icon(
             if (isCurrent && isPlaying) Icons.Filled.PauseCircle else Icons.Filled.PlayCircle,
             contentDescription = if (isCurrent && isPlaying) "Pause" else "Play",

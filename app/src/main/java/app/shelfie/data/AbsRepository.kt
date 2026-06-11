@@ -49,6 +49,12 @@ class AbsRepository(
     private var podcastsCache: List<LibraryItemSummary> = emptyList()
 
     @Volatile
+    private var latestCache: List<PodcastEpisode> = emptyList()
+
+    @Volatile
+    private var librariesCache: List<Library> = emptyList()
+
+    @Volatile
     private var progressCache: Map<String, MediaProgress> = emptyMap()
 
     @Volatile
@@ -150,25 +156,58 @@ class AbsRepository(
         token = ""
         itemCache.clear()
         podcastsCache = emptyList()
+        latestCache = emptyList()
+        librariesCache = emptyList()
         progressCache = emptyMap()
         settings.clear()
     }
 
-    /** Returns the podcast library id, picking and persisting the first podcast library if unset. */
-    suspend fun podcastLibraryId(): String {
+    /** All libraries on the server (podcast, audiobook, music, …). */
+    suspend fun libraries(forceRefresh: Boolean = false): List<Library> {
+        if (!forceRefresh && librariesCache.isNotEmpty()) return librariesCache
+        val result = try {
+            requireApi().libraries().libraries.also { diskCacheWrite("libraries.json", it) }
+        } catch (e: Exception) {
+            diskCacheRead<List<Library>>("libraries.json") ?: throw e
+        }
+        librariesCache = result
+        return result
+    }
+
+    /** Returns the active library id, defaulting to the first podcast library (else first library). */
+    suspend fun activeLibraryId(): String {
         val saved = settings.snapshot().libraryId
         if (saved.isNotBlank()) return saved
-        val libraries = requireApi().libraries().libraries
-        val podcastLibrary = libraries.firstOrNull { it.mediaType == "podcast" }
-            ?: throw IllegalStateException("No podcast library found on this server")
-        settings.saveLibraryId(podcastLibrary.id)
-        return podcastLibrary.id
+        val all = libraries()
+        val pick = all.firstOrNull { it.mediaType == "podcast" } ?: all.firstOrNull()
+            ?: throw IllegalStateException("No libraries found on this server")
+        settings.saveLibraryId(pick.id)
+        return pick.id
+    }
+
+    suspend fun activeLibrary(): Library? {
+        val id = activeLibraryId()
+        return libraries().firstOrNull { it.id == id }
+    }
+
+    /** Switches the active library and clears caches so the next loads use it. */
+    suspend fun selectLibrary(libraryId: String) {
+        settings.saveLibraryId(libraryId)
+        podcastsCache = emptyList()
+        latestCache = emptyList()
+        itemCache.clear()
+        progressFetchedAt = 0
+        runCatching {
+            cacheDir?.listFiles()
+                ?.filterNot { it.name == "libraries.json" }
+                ?.forEach { it.delete() }
+        }
     }
 
     suspend fun podcasts(forceRefresh: Boolean = false): List<LibraryItemSummary> {
         if (!forceRefresh && podcastsCache.isNotEmpty()) return podcastsCache
         val items = try {
-            val libraryId = podcastLibraryId()
+            val libraryId = activeLibraryId()
             requireApi().libraryItems(libraryId).results.also {
                 diskCacheWrite("podcasts.json", it)
             }
@@ -197,14 +236,13 @@ class AbsRepository(
             try {
                 val me = requireApi().me()
                 progressCache = me.mediaProgress
-                    .filter { it.episodeId != null }
-                    .associateBy { "${it.libraryItemId}:${it.episodeId}" }
+                    .associateBy { "${it.libraryItemId}:${it.episodeId ?: ""}" }
                 progressFetchedAt = now
                 diskCacheWrite("progress.json", progressCache.values.toList())
             } catch (e: Exception) {
                 if (progressCache.isEmpty()) {
                     progressCache = diskCacheRead<List<MediaProgress>>("progress.json")
-                        ?.associateBy { "${it.libraryItemId}:${it.episodeId}" }
+                        ?.associateBy { "${it.libraryItemId}:${it.episodeId ?: ""}" }
                         ?: emptyMap()
                 }
                 // Offline: serve the last known progress instead of failing.
@@ -216,6 +254,10 @@ class AbsRepository(
     suspend fun progress(itemId: String, episodeId: String, maxAgeMs: Long = 30_000): MediaProgress? =
         progressMap(maxAgeMs)["$itemId:$episodeId"]
 
+    /** Whole-book progress for audiobook/music library items. */
+    suspend fun bookProgress(itemId: String, maxAgeMs: Long = 30_000): MediaProgress? =
+        progressMap(maxAgeMs)["$itemId:"]
+
     data class InProgressEpisode(
         val podcast: LibraryItemExpanded,
         val episode: PodcastEpisode,
@@ -223,8 +265,8 @@ class AbsRepository(
     )
 
     /** Episodes the user has started but not finished, most recently played first. */
-    suspend fun continueListening(limit: Int = 15): List<InProgressEpisode> =
-        progressMap().values
+    suspend fun continueListening(limit: Int = 15, forceRefresh: Boolean = false): List<InProgressEpisode> =
+        progressMap(maxAgeMs = if (forceRefresh) 0 else 30_000).values
             .filter { it.episodeId != null && !it.isFinished && it.currentTime > 0 }
             .sortedByDescending { it.lastUpdate }
             .take(limit)
@@ -237,16 +279,25 @@ class AbsRepository(
             }
 
     /** Most recently added podcasts in the library. */
-    suspend fun recentlyAdded(limit: Int = 12): List<LibraryItemSummary> =
-        podcasts().sortedByDescending { it.addedAt }.take(limit)
+    suspend fun recentlyAdded(limit: Int = 12, forceRefresh: Boolean = false): List<LibraryItemSummary> =
+        podcasts(forceRefresh).sortedByDescending { it.addedAt }.take(limit)
 
     /** Newest episodes across the whole library, latest first. */
-    suspend fun latestEpisodes(limit: Int = 75): List<PodcastEpisode> = try {
-        requireApi().recentEpisodes(podcastLibraryId(), limit).episodes
-            .sortedByDescending { it.publishedAt ?: 0 }
-            .also { diskCacheWrite("latest.json", it) }
-    } catch (e: Exception) {
-        diskCacheRead<List<PodcastEpisode>>("latest.json") ?: throw e
+    suspend fun latestEpisodes(limit: Int = 75, forceRefresh: Boolean = false): List<PodcastEpisode> {
+        if (!forceRefresh && latestCache.isNotEmpty()) return latestCache
+        val active = runCatching { activeLibrary() }.getOrNull()
+        if (active != null && active.mediaType != "podcast") {
+            throw IllegalStateException("Latest episodes are only available for podcast libraries")
+        }
+        val result = try {
+            requireApi().recentEpisodes(activeLibraryId(), limit).episodes
+                .sortedByDescending { it.publishedAt ?: 0 }
+                .also { diskCacheWrite("latest.json", it) }
+        } catch (e: Exception) {
+            diskCacheRead<List<PodcastEpisode>>("latest.json") ?: throw e
+        }
+        latestCache = result
+        return result
     }
 
     suspend fun listeningStats(): ListeningStats = requireApi().listeningStats()
@@ -281,16 +332,17 @@ class AbsRepository(
 
     suspend fun updateProgress(itemId: String, episodeId: String, currentTimeSec: Double, durationSec: Double) {
         val progress = if (durationSec > 0) (currentTimeSec / durationSec).coerceIn(0.0, 1.0) else 0.0
-        requireApi().updateEpisodeProgress(
-            itemId,
-            episodeId,
-            ProgressUpdate(
-                currentTime = currentTimeSec,
-                duration = durationSec,
-                progress = progress,
-                isFinished = progress > 0.98,
-            ),
+        val body = ProgressUpdate(
+            currentTime = currentTimeSec,
+            duration = durationSec,
+            progress = progress,
+            isFinished = progress > 0.98,
         )
+        if (episodeId.isBlank()) {
+            requireApi().updateBookProgress(itemId, body)
+        } else {
+            requireApi().updateEpisodeProgress(itemId, episodeId, body)
+        }
     }
 
     fun coverUrl(itemId: String): String = "$serverUrl/api/items/$itemId/cover?token=$token"
@@ -299,6 +351,11 @@ class AbsRepository(
         val contentUrl = episode.audioTrack?.contentUrl
             ?: episode.audioFile?.ino?.takeIf { it.isNotBlank() }?.let { "/api/items/$itemId/file/$it" }
             ?: return null
+        return tokenizedUrl(contentUrl)
+    }
+
+    /** Appends the auth token to a server-relative content URL. */
+    fun tokenizedUrl(contentUrl: String): String {
         val separator = if (contentUrl.contains('?')) "&" else "?"
         return "$serverUrl$contentUrl${separator}token=$token"
     }

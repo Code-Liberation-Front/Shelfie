@@ -13,11 +13,26 @@ android {
         applicationId = "app.shelfie"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.7.2"
+        versionCode = 15
+        versionName = "0.8.5"
+    }
+
+    // Shared, committed keystore so every CI build signs identically and
+    // installed builds update in place. Not a secret — it only provides
+    // update continuity for sideloaded APKs.
+    signingConfigs {
+        create("shared") {
+            storeFile = rootProject.file("signing/shelfie.keystore")
+            storePassword = "shelfie"
+            keyAlias = "shelfie"
+            keyPassword = "shelfie"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("shared")
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -25,7 +40,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("shared")
         }
     }
 
@@ -56,6 +71,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.browser)
+    implementation(libs.androidx.documentfile)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.mediarouter)
     implementation(libs.play.services.cast.framework)

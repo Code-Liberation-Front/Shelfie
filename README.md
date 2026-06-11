@@ -12,7 +12,7 @@ Shelfie connects to your self-hosted Audiobookshelf server and turns your podcas
 - **Home / Latest / Library tabs** — Home shows Continue Listening and Recently Added shelves; Latest lists the newest episodes across your whole library; Library is the full cover-art grid
 - **Search** — find podcasts and episodes by name from the top bar
 - **Chromecast** — cast playback to a TV or speaker from the cast button in the top bar
-- **Settings** — view your account and listening stats, switch servers/users
+- **Settings** — view your account and listening stats, switch servers/users, and switch between podcast libraries on the server
 - **Downloads & offline** — download episodes for offline listening (with live progress and speed in Settings → Downloads); the library, episode lists, and listening progress are cached so the app works without a connection and plays downloaded episodes
 - **Browse your podcast library** — cover-art grid, episode lists with publish dates and durations
 - **Stream episodes** with background playback, media notification, lockscreen/Bluetooth controls
@@ -30,7 +30,7 @@ Grab the APK one of two ways:
 
 Sideload it by enabling *Install unknown apps* for your browser/file manager, then opening the APK.
 
-> The APK is currently debug-signed. When updating you can install over the previous build as long as both came from CI; if signatures ever mismatch, uninstall first.
+> All CI builds are signed with a shared key committed to the repo, so newer APKs install directly over older ones. If you installed a build from before this key existed (≤ v0.8.1), uninstall once — after that, updates apply in place.
 
 ## Android Auto
 

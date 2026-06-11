@@ -23,6 +23,7 @@ import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import app.shelfie.R
 import app.shelfie.ShelfieApp
+import app.shelfie.data.BookTrack
 import app.shelfie.data.LibraryItemExpanded
 import app.shelfie.data.LibraryItemSummary
 import app.shelfie.data.PodcastEpisode
@@ -46,6 +47,11 @@ private const val CONTINUE_ID = "continue"
 private const val PODCASTS_ID = "podcasts"
 private const val PODCAST_PREFIX = "podcast:"
 private const val EPISODE_PREFIX = "episode:"
+private const val TRACK_PREFIX = "track:"
+
+// Extras carried on audiobook track items for progress reporting.
+private const val EXTRA_TRACK_START_OFFSET = "app.shelfie.trackStartOffset"
+private const val EXTRA_BOOK_DURATION = "app.shelfie.bookDuration"
 
 // Android Auto content-style hints (androidx.media legacy extras understood by Auto).
 private const val EXTRA_STYLE_BROWSABLE = "android.media.browse.CONTENT_STYLE_BROWSABLE_HINT"
@@ -191,18 +197,35 @@ class PlaybackService : MediaLibraryService() {
     private suspend fun pushProgress() {
         val current = activePlayer ?: return
         val mediaId = current.currentMediaItem?.mediaId ?: return
-        if (!mediaId.startsWith(EPISODE_PREFIX)) return
         if (current.playbackState != Player.STATE_READY && current.playbackState != Player.STATE_ENDED) return
         val parts = mediaId.split(":", limit = 3)
         if (parts.size != 3) return
         val positionMs = current.currentPosition
-        val durationMs = current.duration
-        val durationSec = if (durationMs != C.TIME_UNSET) durationMs / 1000.0 else 0.0
         app.settings.saveLastPlayed(mediaId, positionMs)
-        withContext(Dispatchers.IO) {
-            runCatching {
-                if (repo.ensureConfigured()) {
-                    repo.updateProgress(parts[1], parts[2], positionMs / 1000.0, durationSec)
+        when {
+            mediaId.startsWith(EPISODE_PREFIX) -> {
+                val durationMs = current.duration
+                val durationSec = if (durationMs != C.TIME_UNSET) durationMs / 1000.0 else 0.0
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        if (repo.ensureConfigured()) {
+                            repo.updateProgress(parts[1], parts[2], positionMs / 1000.0, durationSec)
+                        }
+                    }
+                }
+            }
+
+            mediaId.startsWith(TRACK_PREFIX) -> {
+                // Book progress is reported against the whole book timeline.
+                val extras = current.currentMediaItem?.mediaMetadata?.extras
+                val startOffset = extras?.getDouble(EXTRA_TRACK_START_OFFSET) ?: 0.0
+                val bookDuration = extras?.getDouble(EXTRA_BOOK_DURATION) ?: 0.0
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        if (repo.ensureConfigured()) {
+                            repo.updateProgress(parts[1], "", startOffset + positionMs / 1000.0, bookDuration)
+                        }
+                    }
                 }
             }
         }
@@ -324,7 +347,7 @@ class PlaybackService : MediaLibraryService() {
         ): ListenableFuture<LibraryResult<MediaItem>> =
             serviceScope.future {
                 try {
-                    val item = withContext(Dispatchers.IO) { resolveEpisode(mediaId) }
+                    val item = withContext(Dispatchers.IO) { resolveAny(mediaId) }
                     if (item != null) {
                         LibraryResult.ofItem(item, null)
                     } else {
@@ -375,7 +398,7 @@ class PlaybackService : MediaLibraryService() {
         ): ListenableFuture<MutableList<MediaItem>> =
             serviceScope.future {
                 withContext(Dispatchers.IO) {
-                    mediaItems.mapNotNull { runCatching { resolveEpisode(it.mediaId) }.getOrNull() }
+                    mediaItems.mapNotNull { runCatching { resolveAny(it.mediaId) }.getOrNull() }
                         .toMutableList()
                 }
             }
@@ -395,15 +418,20 @@ class PlaybackService : MediaLibraryService() {
                         .firstOrNull { !it.requestMetadata.searchQuery.isNullOrBlank() }
                         ?.requestMetadata?.searchQuery
                     val episodeIds = mediaItems.filter { it.mediaId.startsWith(EPISODE_PREFIX) }
+                    val trackIds = mediaItems.filter { it.mediaId.startsWith(TRACK_PREFIX) }
 
                     when {
+                        // Audiobook track tapped: queue the whole book at that track.
+                        trackIds.isNotEmpty() ->
+                            bookQueueFor(trackIds[0].mediaId, startPositionMs)
+
                         // Single episode tapped: queue the whole podcast so next/previous work.
                         episodeIds.size == 1 ->
                             podcastQueueFor(episodeIds[0].mediaId, startPositionMs)
 
                         episodeIds.isNotEmpty() -> {
                             val resolved = episodeIds.mapNotNull {
-                                runCatching { resolveEpisode(it.mediaId) }.getOrNull()
+                                runCatching { resolveAny(it.mediaId) }.getOrNull()
                             }
                             val index = if (startIndex == C.INDEX_UNSET) 0
                             else startIndex.coerceIn(0, (resolved.size - 1).coerceAtLeast(0))
@@ -429,9 +457,13 @@ class PlaybackService : MediaLibraryService() {
                 val (mediaId, storedPositionMs) = app.settings.lastPlayed()
                     ?: throw UnsupportedOperationException("Nothing to resume")
                 withContext(Dispatchers.IO) {
-                    val serverPositionMs = savedPositionMs(mediaId)
-                    val position = if (serverPositionMs != C.TIME_UNSET) serverPositionMs else storedPositionMs
-                    podcastQueueFor(mediaId, position)
+                    if (mediaId.startsWith(TRACK_PREFIX)) {
+                        bookQueueFor(mediaId, storedPositionMs)
+                    } else {
+                        val serverPositionMs = savedPositionMs(mediaId)
+                        val position = if (serverPositionMs != C.TIME_UNSET) serverPositionMs else storedPositionMs
+                        podcastQueueFor(mediaId, position)
+                    }
                 }
             }
     }
@@ -507,7 +539,18 @@ class PlaybackService : MediaLibraryService() {
         if (parts.size != 3 || !repo.ensureConfigured()) {
             return MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0)
         }
-        val podcast = repo.podcast(parts[1])
+        val podcast = try {
+            repo.podcast(parts[1])
+        } catch (e: Exception) {
+            // Offline with no cached metadata: fall back to the downloaded copy.
+            val downloaded = downloadedEpisodeItem(parts[1], parts[2])
+                ?: return MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0)
+            var position = startPositionMs
+            if (position == C.TIME_UNSET) {
+                position = savedPositionMs(mediaId)
+            }
+            return MediaSession.MediaItemsWithStartPosition(listOf(downloaded), 0, position)
+        }
         val autoPlay = runCatching { app.settings.autoPlayEnabled() }.getOrDefault(true)
         val episodes = if (autoPlay) {
             buildAutoPlayQueue(podcast, parts[2])
@@ -555,15 +598,122 @@ class PlaybackService : MediaLibraryService() {
         return (progress.currentTime * 1000).toLong()
     }
 
+    private suspend fun resolveAny(mediaId: String): MediaItem? = when {
+        mediaId.startsWith(EPISODE_PREFIX) -> resolveEpisode(mediaId)
+        mediaId.startsWith(TRACK_PREFIX) -> resolveTrack(mediaId)
+        else -> null
+    }
+
+    /** Turns a "track:{itemId}:{index}" media id into a fully playable MediaItem. */
+    private suspend fun resolveTrack(mediaId: String): MediaItem? {
+        val parts = mediaId.split(":", limit = 3)
+        if (parts.size != 3) return null
+        if (!repo.ensureConfigured()) return null
+        val book = repo.podcast(parts[1])
+        val index = parts[2].toIntOrNull() ?: return null
+        val track = book.media.tracks.getOrNull(index) ?: return null
+        return trackItem(book, index, track)
+    }
+
+    /**
+     * Queues an entire audiobook positioned at the selected track, resuming inside
+     * that track from the server-side book position when none was requested.
+     */
+    private suspend fun bookQueueFor(
+        mediaId: String,
+        startPositionMs: Long,
+    ): MediaSession.MediaItemsWithStartPosition {
+        val parts = mediaId.split(":", limit = 3)
+        if (parts.size != 3 || !repo.ensureConfigured()) {
+            return MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0)
+        }
+        val book = repo.podcast(parts[1])
+        val tracks = book.media.tracks
+        if (tracks.isEmpty()) {
+            return MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0)
+        }
+        val startIndex = (parts[2].toIntOrNull() ?: 0).coerceIn(0, tracks.lastIndex)
+        val queue = tracks.mapIndexed { index, track -> trackItem(book, index, track) }
+        var position = startPositionMs
+        if (position == C.TIME_UNSET) {
+            val saved = runCatching { repo.bookProgress(parts[1]) }.getOrNull()
+            val track = tracks[startIndex]
+            val bookTime = saved?.currentTime ?: 0.0
+            position = if (saved != null && !saved.isFinished &&
+                bookTime >= track.startOffset && bookTime < track.startOffset + track.duration
+            ) {
+                ((bookTime - track.startOffset) * 1000).toLong()
+            } else {
+                0L
+            }
+        }
+        return MediaSession.MediaItemsWithStartPosition(queue, startIndex, position)
+    }
+
+    private fun trackItem(book: LibraryItemExpanded, index: Int, track: BookTrack): MediaItem {
+        val extras = Bundle().apply {
+            putDouble(EXTRA_TRACK_START_OFFSET, track.startOffset)
+            putDouble(EXTRA_BOOK_DURATION, book.media.duration)
+        }
+        val metadata = MediaMetadata.Builder()
+            .setTitle(track.title ?: "Part ${index + 1}")
+            .setArtist(book.media.metadata.title)
+            .setAlbumTitle(book.media.metadata.title)
+            .setArtworkUri(Uri.parse(repo.coverUrl(book.id)))
+            .setIsBrowsable(false)
+            .setIsPlayable(true)
+            .setMediaType(MediaMetadata.MEDIA_TYPE_AUDIO_BOOK_CHAPTER)
+            .setExtras(extras)
+            .build()
+        val builder = MediaItem.Builder()
+            .setMediaId("$TRACK_PREFIX${book.id}:$index")
+            .setMediaMetadata(metadata)
+        track.contentUrl?.let { contentUrl ->
+            builder.setUri(repo.tokenizedUrl(contentUrl))
+            builder.setMimeType("audio/mpeg")
+        }
+        return builder.build()
+    }
+
+    /**
+     * Builds a playable item for a downloaded episode straight from the download
+     * index, so offline playback never depends on the API cache (which can be
+     * cleared by library switches or missing on some devices).
+     */
+    private fun downloadedEpisodeItem(itemId: String, episodeId: String): MediaItem? {
+        val localUri = app.downloads.localUri(itemId, episodeId) ?: return null
+        val entry = app.downloads.entry(itemId, episodeId) ?: return null
+        val metadata = MediaMetadata.Builder()
+            .setTitle(entry.title)
+            .setArtist(entry.podcastTitle)
+            .setAlbumTitle(entry.podcastTitle)
+            .setArtworkUri(Uri.parse(repo.coverUrl(itemId)))
+            .setIsBrowsable(false)
+            .setIsPlayable(true)
+            .setMediaType(MediaMetadata.MEDIA_TYPE_PODCAST_EPISODE)
+            .build()
+        return MediaItem.Builder()
+            .setMediaId("$EPISODE_PREFIX$itemId:$episodeId")
+            .setMediaMetadata(metadata)
+            .setUri(localUri)
+            .setMimeType("audio/mpeg")
+            .build()
+    }
+
     /** Turns an "episode:{itemId}:{episodeId}" media id into a fully playable MediaItem. */
     private suspend fun resolveEpisode(mediaId: String): MediaItem? {
         if (!mediaId.startsWith(EPISODE_PREFIX)) return null
         val parts = mediaId.split(":", limit = 3)
         if (parts.size != 3) return null
-        if (!repo.ensureConfigured()) return null
-        val podcast = repo.podcast(parts[1])
-        val episode = podcast.media.episodes.firstOrNull { it.id == parts[2] } ?: return null
-        return episodeItem(podcast, episode, withUri = true)
+        return try {
+            if (!repo.ensureConfigured()) return downloadedEpisodeItem(parts[1], parts[2])
+            val podcast = repo.podcast(parts[1])
+            val episode = podcast.media.episodes.firstOrNull { it.id == parts[2] }
+                ?: return downloadedEpisodeItem(parts[1], parts[2])
+            episodeItem(podcast, episode, withUri = true)
+        } catch (e: Exception) {
+            downloadedEpisodeItem(parts[1], parts[2]) ?: throw e
+        }
     }
 
     private fun LibraryItemSummary.toBrowsableItem(): MediaItem =
