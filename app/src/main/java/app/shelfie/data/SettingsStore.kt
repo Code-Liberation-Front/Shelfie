@@ -36,6 +36,15 @@ class SettingsStore(private val context: Context) {
         val lastPlayedMediaId = stringPreferencesKey("last_played_media_id")
         val lastPlayedPositionMs = longPreferencesKey("last_played_position_ms")
         val autoPlay = booleanPreferencesKey("auto_play")
+        val downloadLocation = stringPreferencesKey("download_location")
+    }
+
+    /** Where new downloads are stored: "internal" (default) or "external" app storage. */
+    val downloadLocation: Flow<String> =
+        context.dataStore.data.map { it[Keys.downloadLocation] ?: "internal" }
+
+    suspend fun setDownloadLocation(value: String) {
+        context.dataStore.edit { it[Keys.downloadLocation] = value }
     }
 
     /** Whether playback should continue to the next episode automatically. Defaults to on. */

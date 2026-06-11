@@ -13,6 +13,6 @@ class ShelfieApp : Application() {
     val repository: AbsRepository by lazy {
         AbsRepository(settings, cacheDir = File(filesDir, "apicache"))
     }
-    val downloads: DownloadCenter by lazy { DownloadCenter(this, repository) }
+    val downloads: DownloadCenter by lazy { DownloadCenter(this, repository, settings) }
     val playlist: PlaylistStore by lazy { PlaylistStore(this) }
 }

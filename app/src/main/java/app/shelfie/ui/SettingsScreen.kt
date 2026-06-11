@@ -1,7 +1,12 @@
 package app.shelfie.ui
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -39,6 +44,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import app.shelfie.ShelfieApp
 import app.shelfie.data.Library
 import app.shelfie.data.ListeningStats
@@ -173,6 +179,103 @@ fun SettingsScreen(app: ShelfieApp, onOpenDownloads: () -> Unit, onBack: () -> U
                     },
                 )
             }
+        }
+
+        SettingsCard(title = "Downloads") {
+            val location by app.settings.downloadLocation.collectAsState(initial = "internal")
+            val context = LocalContext.current
+            val externalAvailable = remember { app.getExternalFilesDir("episodes") != null }
+            var locationMenuOpen by remember { mutableStateOf(false) }
+            // On Android 12 and below ask for the legacy storage permissions before
+            // switching to shared storage; newer versions need none for app folders.
+            val storagePermissionLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestMultiplePermissions(),
+            ) {
+                scope.launch { app.settings.setDownloadLocation("external") }
+            }
+
+            fun selectLocation(value: String) {
+                if (value == "external" && Build.VERSION.SDK_INT <= 32 &&
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) !=
+                    PackageManager.PERMISSION_GRANTED
+                ) {
+                    val permissions = buildList {
+                        add(Manifest.permission.READ_EXTERNAL_STORAGE)
+                        if (Build.VERSION.SDK_INT <= 29) add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                    }.toTypedArray()
+                    storagePermissionLauncher.launch(permissions)
+                } else {
+                    scope.launch { app.settings.setDownloadLocation(value) }
+                }
+            }
+
+            Box {
+                OutlinedButton(
+                    onClick = { locationMenuOpen = true },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        if (location == "external") "Shared app storage" else "Internal app storage",
+                        modifier = Modifier.weight(1f),
+                    )
+                    Icon(Icons.Filled.ArrowDropDown, contentDescription = "Choose download location")
+                }
+                DropdownMenu(
+                    expanded = locationMenuOpen,
+                    onDismissRequest = { locationMenuOpen = false },
+                ) {
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text("Internal app storage (default)")
+                                Text(
+                                    app.filesDir.resolve("episodes").path,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                        trailingIcon = if (location != "external") {
+                            { Icon(Icons.Filled.Check, contentDescription = "Selected", tint = MaterialTheme.colorScheme.primary) }
+                        } else {
+                            null
+                        },
+                        onClick = {
+                            locationMenuOpen = false
+                            selectLocation("internal")
+                        },
+                    )
+                    if (externalAvailable) {
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text("Shared app storage")
+                                    Text(
+                                        app.getExternalFilesDir("episodes")?.path ?: "",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            },
+                            trailingIcon = if (location == "external") {
+                                { Icon(Icons.Filled.Check, contentDescription = "Selected", tint = MaterialTheme.colorScheme.primary) }
+                            } else {
+                                null
+                            },
+                            onClick = {
+                                locationMenuOpen = false
+                                selectLocation("external")
+                            },
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "New downloads are saved to the selected location. Existing downloads stay playable where they are.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         SettingsCard(title = "Listening stats") {

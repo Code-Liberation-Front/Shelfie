@@ -13,8 +13,8 @@ android {
         applicationId = "app.shelfie"
         minSdk = 26
         targetSdk = 35
-        versionCode = 12
-        versionName = "0.8.2"
+        versionCode = 13
+        versionName = "0.8.3"
     }
 
     // Shared, committed keystore so every CI build signs identically and

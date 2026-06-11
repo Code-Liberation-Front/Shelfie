@@ -5,6 +5,7 @@ import android.net.Uri
 import app.shelfie.data.AbsRepository
 import app.shelfie.data.LibraryItemExpanded
 import app.shelfie.data.PodcastEpisode
+import app.shelfie.data.SettingsStore
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -54,11 +55,36 @@ data class ActiveDownload(
  * (bytes, total, speed) and the completed-download index. Completed episodes are
  * played from disk, which also works with no network connection.
  */
-class DownloadCenter(context: Context, private val repo: AbsRepository) {
+class DownloadCenter(
+    private val context: Context,
+    private val repo: AbsRepository,
+    settings: SettingsStore,
+) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val dir = File(context.filesDir, "episodes").apply { mkdirs() }
+    private val internalDir = File(context.filesDir, "episodes").apply { mkdirs() }
     private val indexFile = File(context.filesDir, "downloads_index.json")
+
+    @Volatile
+    private var useExternal = false
+
+    init {
+        scope.launch {
+            settings.downloadLocation.collect { useExternal = it == "external" }
+        }
+    }
+
+    private fun externalDir(): File? =
+        context.getExternalFilesDir("episodes")?.apply { mkdirs() }
+
+    /** Directory new downloads are written to, per the user's setting. */
+    fun activeDir(): File =
+        if (useExternal) externalDir() ?: internalDir else internalDir
+
+    /** Existing downloads may live in either location (the setting can change). */
+    private fun findFile(fileName: String): File? =
+        listOfNotNull(File(internalDir, fileName), externalDir()?.let { File(it, fileName) })
+            .firstOrNull { it.exists() }
     private val json = Json { ignoreUnknownKeys = true }
     private val client = OkHttpClient()
     private val jobs = ConcurrentHashMap<String, Job>()
@@ -78,8 +104,7 @@ class DownloadCenter(context: Context, private val repo: AbsRepository) {
     fun localUri(itemId: String, episodeId: String): Uri? {
         val entry = _completed.value.firstOrNull { it.itemId == itemId && it.episodeId == episodeId }
             ?: return null
-        val file = File(dir, entry.fileName)
-        return if (file.exists()) Uri.fromFile(file) else null
+        return findFile(entry.fileName)?.let(Uri::fromFile)
     }
 
     fun totalDownloadedBytes(): Long = _completed.value.sumOf { it.sizeBytes }
@@ -90,6 +115,7 @@ class DownloadCenter(context: Context, private val repo: AbsRepository) {
         val url = repo.streamUrl(podcast.id, episode) ?: return
         val title = episode.title ?: "Episode"
         val podcastTitle = podcast.media.metadata.title ?: ""
+        val dir = activeDir()
         val safeName = key.replace(Regex("[^A-Za-z0-9._-]"), "_")
         val tmp = File(dir, "$safeName.part")
         val final = File(dir, "$safeName.audio")
@@ -160,7 +186,7 @@ class DownloadCenter(context: Context, private val repo: AbsRepository) {
     }
 
     fun delete(entry: DownloadedEpisode) {
-        File(dir, entry.fileName).delete()
+        findFile(entry.fileName)?.delete()
         val updated = _completed.value.filterNot {
             it.itemId == entry.itemId && it.episodeId == entry.episodeId
         }
