@@ -156,35 +156,36 @@ fun EpisodesScreen(
                 )
             }
 
-            Column(Modifier.fillMaxSize()) {
-                if (episodeRows.isNotEmpty()) {
-                    SelectionBar(
-                        selectMode = selectMode,
-                        selectedCount = selectedIds.size,
-                        allSelected = selectedIds.size == episodeRows.size,
-                        onEnter = { selectMode = true },
-                        onCancel = { exitSelect() },
-                        onToggleAll = {
-                            selectedIds = if (selectedIds.size == episodeRows.size) {
-                                emptySet()
-                            } else {
-                                episodeRows.map { it.episode.id }.toSet()
-                            }
-                        },
-                        onBulkPlaylist = { if (selectedIds.isNotEmpty()) showBulkPlaylist = true },
-                        onBulkDownload = {
-                            selectedEpisodes.forEach { app.downloads.download(state.podcast, it) }
-                            exitSelect()
-                        },
-                    )
-                }
-                LazyColumn(Modifier.weight(1f)) {
+            LazyColumn(Modifier.fillMaxSize()) {
                 item {
                     PodcastHeader(
                         podcast = state.podcast,
                         coverUrl = app.repository.coverUrl(itemId),
                         onBack = onBack,
                     )
+                }
+                if (episodeRows.isNotEmpty()) {
+                    item {
+                        SelectionBar(
+                            selectMode = selectMode,
+                            selectedCount = selectedIds.size,
+                            allSelected = selectedIds.size == episodeRows.size,
+                            onEnter = { selectMode = true },
+                            onCancel = { exitSelect() },
+                            onToggleAll = {
+                                selectedIds = if (selectedIds.size == episodeRows.size) {
+                                    emptySet()
+                                } else {
+                                    episodeRows.map { it.episode.id }.toSet()
+                                }
+                            },
+                            onBulkPlaylist = { if (selectedIds.isNotEmpty()) showBulkPlaylist = true },
+                            onBulkDownload = {
+                                selectedEpisodes.forEach { app.downloads.download(state.podcast, it) }
+                                exitSelect()
+                            },
+                        )
+                    }
                 }
                 // Audiobook/MP3 items have tracks instead of episodes.
                 if (state.episodes.isEmpty() && state.podcast.media.tracks.isNotEmpty()) {
@@ -262,7 +263,6 @@ fun EpisodesScreen(
                         },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-                }
                 }
             }
         }

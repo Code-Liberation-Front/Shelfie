@@ -322,6 +322,25 @@ fun bulkDownload(
     }
 }
 
+/** Downloads a batch of episodes given their (itemId, episodeId) pairs. */
+fun bulkDownloadByIds(
+    app: ShelfieApp,
+    scope: CoroutineScope,
+    items: List<Pair<String, String>>,
+) {
+    scope.launch(Dispatchers.IO) {
+        items.groupBy { it.first }.forEach { (itemId, pairs) ->
+            runCatching {
+                val podcast = app.repository.podcast(itemId)
+                pairs.forEach { (_, episodeId) ->
+                    podcast.media.episodes.firstOrNull { it.id == episodeId }
+                        ?.let { app.downloads.download(podcast, it) }
+                }
+            }
+        }
+    }
+}
+
 /** Downloads an episode for offline use, or removes the local copy. */
 fun toggleEpisodeDownload(
     app: ShelfieApp,
