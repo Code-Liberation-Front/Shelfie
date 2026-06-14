@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistAdd
@@ -36,7 +38,9 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -46,12 +50,15 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -66,19 +73,41 @@ import kotlinx.coroutines.withContext
 
 private const val DOWNLOADED_PLAYLIST_ID = "__downloaded__"
 
+private data class PlaylistRowMeta(
+    val fraction: Float,
+    val isFinished: Boolean,
+    val publishDate: String,
+    val durationSec: Double,
+)
+
+private data class EpisodeInfo(
+    val publishedAt: Long?,
+    val pubDate: String?,
+    val durationSec: Double,
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PlaylistScreen(
     app: ShelfieApp,
     controller: MediaController?,
     playerState: PlayerUiState,
+    onOpenPodcast: (String) -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
     val playlists by app.playlist.playlists.collectAsState()
     val downloaded by app.downloads.completed.collectAsState()
+    val activeDownloads by app.downloads.active.collectAsState()
+    val progressRevision by app.repository.progressRevision.collectAsState()
     var selectedId by rememberSaveable { mutableStateOf(DOWNLOADED_PLAYLIST_ID) }
     var showCreateDialog by remember { mutableStateOf(false) }
     var addingToPlaylist by remember { mutableStateOf<String?>(null) }
+    var pickerEntry by remember { mutableStateOf<PlaylistEntry?>(null) }
     var isRefreshing by remember { mutableStateOf(false) }
+
+    pickerEntry?.let { entry ->
+        PlaylistPickerDialog(app = app, entry = entry, onDismiss = { pickerEntry = null })
+    }
 
     // Playlists are local state; refresh is a quick visual confirmation.
     LaunchedEffect(isRefreshing) {
@@ -113,6 +142,41 @@ fun PlaylistScreen(
             .map { PlaylistEntry(it.itemId, it.episodeId, it.title, it.podcastTitle) }
     } else {
         selectedPlaylist?.entries ?: emptyList()
+    }
+
+    // Playlist entries only store title/podcast, so look up publish date and
+    // listening progress for each row (cached, so this is cheap after the first
+    // load and degrades gracefully offline).
+    val rowMeta by produceState(emptyMap<String, PlaylistRowMeta>(), rows, progressRevision) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val info = mutableMapOf<String, EpisodeInfo>()
+                rows.map { it.itemId }.distinct().forEach { id ->
+                    runCatching {
+                        app.repository.podcast(id).media.episodes.forEach { ep ->
+                            info["$id:${ep.id}"] = EpisodeInfo(
+                                publishedAt = ep.publishedAt,
+                                pubDate = ep.pubDate,
+                                durationSec = (ep.audioTrack?.duration ?: ep.audioFile?.duration ?: 0.0),
+                            )
+                        }
+                    }
+                }
+                rows.associate { entry ->
+                    val key = "${entry.itemId}:${entry.episodeId}"
+                    val prog = runCatching {
+                        app.repository.progress(entry.itemId, entry.episodeId)
+                    }.getOrNull()
+                    val ei = info[key]
+                    key to PlaylistRowMeta(
+                        fraction = (prog?.progress ?: 0.0).toFloat().coerceIn(0f, 1f),
+                        isFinished = prog?.isFinished == true,
+                        publishDate = formatEpisodeDate(ei?.publishedAt, ei?.pubDate),
+                        durationSec = ei?.durationSec ?: 0.0,
+                    )
+                }
+            }.getOrDefault(emptyMap())
+        }
     }
 
     PullToRefreshBox(
@@ -193,24 +257,64 @@ fun PlaylistScreen(
             return@Column
         }
 
-        Button(
-            onClick = { controller?.playEntries(rows, 0) },
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 4.dp),
         ) {
-            Icon(Icons.Filled.PlayArrow, contentDescription = null)
-            Spacer(Modifier.width(6.dp))
-            Text("Play all (${rows.size})")
+            Button(
+                onClick = { controller?.playEntries(rows, 0) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Play all (${rows.size})")
+            }
+            if (selectedId != DOWNLOADED_PLAYLIST_ID) {
+                OutlinedButton(
+                    onClick = { bulkDownloadByIds(app, scope, rows.map { it.itemId to it.episodeId }) },
+                ) {
+                    Icon(Icons.Filled.Download, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Download all")
+                }
+            }
         }
 
         LazyColumn(Modifier.fillMaxSize()) {
             itemsIndexed(rows, key = { _, e -> "${e.itemId}:${e.episodeId}" }) { index, entry ->
+                val meta = rowMeta["${entry.itemId}:${entry.episodeId}"]
+                val isDownloaded = downloaded.any {
+                    it.itemId == entry.itemId && it.episodeId == entry.episodeId
+                }
                 PlaylistRow(
                     entry = entry,
                     coverUrl = app.repository.coverUrl(entry.itemId),
                     isCurrent = playerState.mediaId == episodeMediaId(entry.itemId, entry.episodeId),
+                    meta = meta,
+                    downloadUi = downloadUiFor(app, activeDownloads, downloaded, entry.itemId, entry.episodeId),
                     removable = selectedId != DOWNLOADED_PLAYLIST_ID,
+                    actions = EpisodeMenuActions(
+                        isFinished = meta?.isFinished == true,
+                        isDownloaded = isDownloaded,
+                        onResetProgress = {
+                            resetEpisodeProgress(app, scope, entry.itemId, entry.episodeId, meta?.durationSec ?: 0.0)
+                        },
+                        onToggleFinished = {
+                            setEpisodeFinished(
+                                app, scope, entry.itemId, entry.episodeId,
+                                finished = meta?.isFinished != true,
+                                durationSec = meta?.durationSec ?: 0.0,
+                            )
+                        },
+                        onAddToPlaylist = { pickerEntry = entry },
+                        onGoToPodcast = { onOpenPodcast(entry.itemId) },
+                        onToggleDownload = {
+                            toggleEpisodeDownload(app, scope, entry.itemId, entry.episodeId, isDownloaded)
+                        },
+                    ),
                     onClick = { controller?.playEntries(rows, index) },
                     onRemove = { app.playlist.removeFrom(selectedId, entry.itemId, entry.episodeId) },
                 )
@@ -309,6 +413,67 @@ fun PlaylistPickerDialog(app: ShelfieApp, entry: PlaylistEntry, onDismiss: () ->
                             val id = app.playlist.create(newName)
                             app.playlist.addTo(id, entry)
                             newName = ""
+                        },
+                        enabled = newName.isNotBlank(),
+                    ) {
+                        Text("Create")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Done") }
+        },
+    )
+}
+
+/** Picks a playlist and adds every one of [entries] to it (used by bulk select). */
+@Composable
+fun BulkPlaylistPickerDialog(
+    app: ShelfieApp,
+    entries: List<PlaylistEntry>,
+    onDismiss: () -> Unit,
+) {
+    val playlists by app.playlist.playlists.collectAsState()
+    var newName by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add ${entries.size} to playlist") },
+        text = {
+            Column {
+                playlists.forEach { playlist ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                entries.forEach { app.playlist.addTo(playlist.id, it) }
+                                onDismiss()
+                            }
+                            .padding(vertical = 10.dp),
+                    ) {
+                        Text(
+                            playlist.name,
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        label = { Text("New playlist") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        onClick = {
+                            val id = app.playlist.create(newName)
+                            entries.forEach { app.playlist.addTo(id, it) }
+                            newName = ""
+                            onDismiss()
                         },
                         enabled = newName.isNotBlank(),
                     ) {
@@ -497,52 +662,46 @@ private fun PlaylistRow(
     entry: PlaylistEntry,
     coverUrl: String,
     isCurrent: Boolean,
+    meta: PlaylistRowMeta?,
+    downloadUi: DownloadUi,
     removable: Boolean,
+    actions: EpisodeMenuActions,
     onClick: () -> Unit,
     onRemove: () -> Unit,
 ) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-    ) {
-        CoverImage(
-            model = coverUrl,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
+    val fraction = meta?.fraction ?: 0f
+    val completed = isNearlyComplete(fraction, meta?.isFinished == true)
+    val dateLine = listOf(
+        meta?.publishDate.orEmpty(),
+        formatDuration((meta?.durationSec ?: 0.0).toLong()),
+    )
+        .filter { it.isNotBlank() }
+        .joinToString(" • ")
+    EpisodeLongPressBox(onClick = onClick, actions = actions, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(8.dp)),
-        )
-        Column(
-            Modifier
-                .weight(1f)
-                .padding(horizontal = 12.dp),
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
         ) {
-            Text(
-                entry.title,
-                style = MaterialTheme.typography.titleSmall,
-                color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+            EpisodeRowContent(
+                coverUrl = coverUrl,
+                title = entry.title,
+                subtitle = entry.podcastTitle,
+                dateLine = dateLine,
+                progressFraction = fraction,
+                completed = completed,
+                titleColor = if (isCurrent) MaterialTheme.colorScheme.primary else Color.Unspecified,
+                downloadUi = downloadUi,
             )
-            Text(
-                entry.podcastTitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        if (removable) {
-            IconButton(onClick = onRemove) {
-                Icon(
-                    Icons.Filled.PlaylistRemove,
-                    contentDescription = "Remove from playlist",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            if (removable) {
+                IconButton(onClick = onRemove) {
+                    Icon(
+                        Icons.Filled.PlaylistRemove,
+                        contentDescription = "Remove from playlist",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }

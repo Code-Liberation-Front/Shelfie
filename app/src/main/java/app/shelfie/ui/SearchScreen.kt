@@ -20,10 +20,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
@@ -37,6 +39,7 @@ import app.shelfie.ShelfieApp
 import app.shelfie.data.LibraryItemExpanded
 import app.shelfie.data.LibraryItemSummary
 import app.shelfie.data.PodcastEpisode
+import app.shelfie.playlist.PlaylistEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -59,6 +62,14 @@ fun SearchScreen(
     var searching by remember { mutableStateOf(false) }
     var results by remember { mutableStateOf<SearchResults?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val completedDownloads by app.downloads.completed.collectAsState()
+    val activeDownloads by app.downloads.active.collectAsState()
+    var pickerEntry by remember { mutableStateOf<PlaylistEntry?>(null) }
+
+    pickerEntry?.let { entry ->
+        PlaylistPickerDialog(app = app, entry = entry, onDismiss = { pickerEntry = null })
+    }
 
     LaunchedEffect(query) {
         error = null
@@ -144,11 +155,39 @@ fun SearchScreen(
                     if (found.episodes.isNotEmpty()) {
                         item { SearchSectionTitle("Episodes") }
                         items(found.episodes, key = { "e:${it.second.id}" }) { (podcast, episode) ->
+                            val itemId = podcast.id
+                            val durationSec = (episode.audioTrack?.duration ?: episode.audioFile?.duration ?: 0.0)
+                            val isDownloaded = completedDownloads.any {
+                                it.itemId == itemId && it.episodeId == episode.id
+                            }
                             EpisodeResultRow(
                                 episode = episode,
                                 podcastTitle = podcast.media.metadata.title ?: "",
-                                coverUrl = app.repository.coverUrl(podcast.id),
-                                onClick = { controller?.playEpisode(podcast.id, episode.id) },
+                                coverUrl = app.repository.coverUrl(itemId),
+                                downloadUi = downloadUiFor(app, activeDownloads, completedDownloads, itemId, episode.id),
+                                actions = EpisodeMenuActions(
+                                    isFinished = false,
+                                    isDownloaded = isDownloaded,
+                                    onResetProgress = {
+                                        resetEpisodeProgress(app, scope, itemId, episode.id, durationSec)
+                                    },
+                                    onToggleFinished = {
+                                        setEpisodeFinished(app, scope, itemId, episode.id, finished = true, durationSec = durationSec)
+                                    },
+                                    onAddToPlaylist = {
+                                        pickerEntry = PlaylistEntry(
+                                            itemId = itemId,
+                                            episodeId = episode.id,
+                                            title = episode.title ?: "Episode",
+                                            podcastTitle = podcast.media.metadata.title ?: "",
+                                        )
+                                    },
+                                    onGoToPodcast = { onOpenPodcast(itemId) },
+                                    onToggleDownload = {
+                                        toggleEpisodeDownload(app, scope, itemId, episode.id, isDownloaded)
+                                    },
+                                ),
+                                onClick = { controller?.playEpisode(itemId, episode.id) },
                             )
                         }
                     }
@@ -185,8 +224,13 @@ private fun PodcastResultRow(title: String, author: String, coverUrl: String, on
                 .size(48.dp)
                 .clip(RoundedCornerShape(8.dp)),
         )
-        Column(Modifier.padding(start = 12.dp)) {
-            Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Column(Modifier.weight(1f).padding(start = 12.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
             if (author.isNotBlank()) {
                 Text(
                     author,
@@ -205,50 +249,39 @@ private fun EpisodeResultRow(
     episode: PodcastEpisode,
     podcastTitle: String,
     coverUrl: String,
+    downloadUi: DownloadUi,
+    actions: EpisodeMenuActions,
     onClick: () -> Unit,
 ) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-    ) {
-        CoverImage(
-            model = coverUrl,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
+    val durationSec = (episode.audioTrack?.duration ?: episode.audioFile?.duration ?: 0.0).toLong()
+    val dateLine = listOf(
+        formatEpisodeDate(episode.publishedAt, episode.pubDate),
+        formatDuration(durationSec),
+    )
+        .filter { it.isNotBlank() }
+        .joinToString(" • ")
+    EpisodeLongPressBox(onClick = onClick, actions = actions, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(8.dp)),
-        )
-        Column(
-            Modifier
-                .weight(1f)
-                .padding(horizontal = 12.dp),
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
-            Text(
-                episode.title ?: "Episode",
-                style = MaterialTheme.typography.titleSmall,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
+            EpisodeRowContent(
+                coverUrl = coverUrl,
+                title = episode.title ?: "Episode",
+                subtitle = podcastTitle,
+                dateLine = dateLine,
+                progressFraction = 0f,
+                completed = false,
+                downloadUi = downloadUi,
             )
-            val meta = listOf(podcastTitle, formatDate(episode.publishedAt))
-                .filter { it.isNotBlank() }
-                .joinToString(" • ")
-            Text(
-                meta,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+            Icon(
+                Icons.Filled.PlayCircle,
+                contentDescription = "Play",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(30.dp),
             )
         }
-        Icon(
-            Icons.Filled.PlayCircle,
-            contentDescription = "Play",
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(30.dp),
-        )
     }
 }

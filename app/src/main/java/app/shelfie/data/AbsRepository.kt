@@ -2,6 +2,9 @@ package app.shelfie.data
 
 import android.util.Base64
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -59,6 +62,11 @@ class AbsRepository(
 
     @Volatile
     private var progressFetchedAt: Long = 0
+
+    // Bumped whenever progress is changed from the UI (reset / mark finished),
+    // so screens can reload to reflect the change immediately.
+    private val _progressRevision = MutableStateFlow(0)
+    val progressRevision: StateFlow<Int> = _progressRevision.asStateFlow()
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -343,6 +351,41 @@ class AbsRepository(
         } else {
             requireApi().updateEpisodeProgress(itemId, episodeId, body)
         }
+    }
+
+    /** Pushes an explicit progress change and refreshes local caches/observers. */
+    private suspend fun patchProgress(itemId: String, episodeId: String, body: ProgressUpdate) {
+        if (episodeId.isBlank()) {
+            requireApi().updateBookProgress(itemId, body)
+        } else {
+            requireApi().updateEpisodeProgress(itemId, episodeId, body)
+        }
+        progressFetchedAt = 0L
+        _progressRevision.value += 1
+    }
+
+    /** Resets an episode/book's listening progress back to zero. */
+    suspend fun resetProgress(itemId: String, episodeId: String, durationSec: Double = 0.0) {
+        patchProgress(
+            itemId,
+            episodeId,
+            ProgressUpdate(currentTime = 0.0, duration = durationSec, progress = 0.0, isFinished = false),
+        )
+    }
+
+    /** Marks an episode/book finished, or back to unplayed. */
+    suspend fun setFinished(
+        itemId: String,
+        episodeId: String,
+        finished: Boolean,
+        durationSec: Double = 0.0,
+    ) {
+        val body = if (finished) {
+            ProgressUpdate(currentTime = durationSec, duration = durationSec, progress = 1.0, isFinished = true)
+        } else {
+            ProgressUpdate(currentTime = 0.0, duration = durationSec, progress = 0.0, isFinished = false)
+        }
+        patchProgress(itemId, episodeId, body)
     }
 
     fun coverUrl(itemId: String): String = "$serverUrl/api/items/$itemId/cover?token=$token"

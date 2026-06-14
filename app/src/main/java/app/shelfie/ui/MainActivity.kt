@@ -312,6 +312,7 @@ private fun MainScaffold(
                         app = app,
                         controller = controller,
                         playerState = playerState,
+                        onOpenPodcast = { itemId -> navController.navigate("podcast/$itemId") },
                     )
                 }
             }
@@ -340,6 +341,7 @@ private fun MainScaffold(
                     app = app,
                     controller = controller,
                     playerState = playerState,
+                    onOpenPodcast = { itemId -> navController.navigate("podcast/$itemId") },
                 )
             }
             composable("search") {

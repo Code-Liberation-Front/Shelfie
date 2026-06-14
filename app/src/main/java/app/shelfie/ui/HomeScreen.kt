@@ -22,11 +22,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,6 +40,7 @@ import androidx.media3.session.MediaController
 import app.shelfie.ShelfieApp
 import app.shelfie.data.AbsRepository
 import app.shelfie.data.LibraryItemSummary
+import app.shelfie.playlist.PlaylistEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -59,7 +62,8 @@ fun HomeScreen(
 ) {
     var refreshKey by remember { mutableIntStateOf(0) }
     var isRefreshing by remember { mutableStateOf(false) }
-    val ui by produceState<HomeUi>(initialValue = HomeUi.Loading, refreshKey) {
+    val progressRevision by app.repository.progressRevision.collectAsState()
+    val ui by produceState<HomeUi>(initialValue = HomeUi.Loading, refreshKey, progressRevision) {
         val force = refreshKey > 0
         value = withContext(Dispatchers.IO) {
             try {
@@ -113,6 +117,14 @@ private fun HomeContent(
         }
 
         is HomeUi.Ready -> {
+            val scope = rememberCoroutineScope()
+            val completedDownloads by app.downloads.completed.collectAsState()
+            var pickerEntry by remember { mutableStateOf<PlaylistEntry?>(null) }
+
+            pickerEntry?.let { entry ->
+                PlaylistPickerDialog(app = app, entry = entry, onDismiss = { pickerEntry = null })
+            }
+
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(vertical = 12.dp),
@@ -127,12 +139,39 @@ private fun HomeContent(
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
                             items(state.inProgress, key = { it.episode.id }) { entry ->
+                                val itemId = entry.podcast.id
+                                val episodeId = entry.episode.id
+                                val durationSec = (entry.episode.audioTrack?.duration
+                                    ?: entry.episode.audioFile?.duration ?: 0.0)
+                                val isDownloaded = completedDownloads.any {
+                                    it.itemId == itemId && it.episodeId == episodeId
+                                }
                                 ContinueCard(
                                     entry = entry,
-                                    coverUrl = app.repository.coverUrl(entry.podcast.id),
-                                    onClick = {
-                                        controller?.playEpisode(entry.podcast.id, entry.episode.id)
-                                    },
+                                    coverUrl = app.repository.coverUrl(itemId),
+                                    actions = EpisodeMenuActions(
+                                        isFinished = false,
+                                        isDownloaded = isDownloaded,
+                                        onResetProgress = {
+                                            resetEpisodeProgress(app, scope, itemId, episodeId, durationSec)
+                                        },
+                                        onToggleFinished = {
+                                            setEpisodeFinished(app, scope, itemId, episodeId, finished = true, durationSec = durationSec)
+                                        },
+                                        onAddToPlaylist = {
+                                            pickerEntry = PlaylistEntry(
+                                                itemId = itemId,
+                                                episodeId = episodeId,
+                                                title = entry.episode.title ?: "Episode",
+                                                podcastTitle = entry.podcast.media.metadata.title ?: "",
+                                            )
+                                        },
+                                        onGoToPodcast = { onOpenPodcast(itemId) },
+                                        onToggleDownload = {
+                                            toggleEpisodeDownload(app, scope, itemId, episodeId, isDownloaded)
+                                        },
+                                    ),
+                                    onClick = { controller?.playEpisode(itemId, episodeId) },
                                 )
                             }
                         }
@@ -186,35 +225,41 @@ private fun EmptyHint(text: String) {
 private fun ContinueCard(
     entry: AbsRepository.InProgressEpisode,
     coverUrl: String,
+    actions: EpisodeMenuActions,
     onClick: () -> Unit,
 ) {
+    val completed = isNearlyComplete(entry.progress.toFloat(), isFinished = false)
+    EpisodeLongPressBox(onClick = onClick, actions = actions, modifier = Modifier.width(150.dp)) {
     Column(
-        modifier = Modifier
-            .width(150.dp)
-            .clickable(onClick = onClick),
+        modifier = Modifier.width(150.dp),
     ) {
         CoverImage(
             model = coverUrl,
             contentDescription = entry.episode.title,
             contentScale = ContentScale.Crop,
+            completed = completed,
             modifier = Modifier
                 .fillMaxWidth()
                 .aspectRatio(1f)
                 .clip(RoundedCornerShape(10.dp)),
         )
-        LinearProgressIndicator(
-            progress = { entry.progress.toFloat() },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 6.dp)
-                .height(3.dp),
-        )
+        if (!completed) {
+            LinearProgressIndicator(
+                progress = { entry.progress.toFloat() },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp)
+                    .height(3.dp),
+            )
+        }
         Text(
             entry.episode.title ?: "Episode",
             style = MaterialTheme.typography.titleSmall,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(top = 6.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp),
         )
         Text(
             entry.podcast.media.metadata.title ?: "",
@@ -223,6 +268,17 @@ private fun ContinueCard(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+        val date = formatEpisodeDate(entry.episode.publishedAt, entry.episode.pubDate)
+        if (date.isNotBlank()) {
+            Text(
+                date,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
     }
 }
 
