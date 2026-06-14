@@ -38,6 +38,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,7 +81,8 @@ fun EpisodesScreen(
     playerState: PlayerUiState,
     onBack: () -> Unit,
 ) {
-    val ui by produceState<EpisodesUi>(initialValue = EpisodesUi.Loading, itemId) {
+    val progressRevision by app.repository.progressRevision.collectAsState()
+    val ui by produceState<EpisodesUi>(initialValue = EpisodesUi.Loading, itemId, progressRevision) {
         value = withContext(Dispatchers.IO) {
             try {
                 val podcast = app.repository.podcast(itemId)
@@ -117,6 +119,7 @@ fun EpisodesScreen(
         }
 
         is EpisodesUi.Ready -> {
+            val scope = rememberCoroutineScope()
             val activeDownloads by app.downloads.active.collectAsState()
             val completedDownloads by app.downloads.completed.collectAsState()
             val playlists by app.playlist.playlists.collectAsState()
@@ -169,6 +172,16 @@ fun EpisodesScreen(
 
                         else -> DownloadUi.None
                     }
+                    val durationSec = (row.episode.audioTrack?.duration ?: row.episode.audioFile?.duration ?: 0.0)
+                    val isDownloaded = downloadUi is DownloadUi.Done
+                    val addToPlaylist = {
+                        pickerEntry = PlaylistEntry(
+                            itemId = itemId,
+                            episodeId = row.episode.id,
+                            title = row.episode.title ?: "Episode",
+                            podcastTitle = state.podcast.media.metadata.title ?: "",
+                        )
+                    }
                     EpisodeRow(
                         row = row,
                         downloadUi = downloadUi,
@@ -178,14 +191,22 @@ fun EpisodesScreen(
                                 it.itemId == itemId && it.episodeId == row.episode.id
                             }
                         },
-                        onTogglePlaylist = {
-                            pickerEntry = PlaylistEntry(
-                                itemId = itemId,
-                                episodeId = row.episode.id,
-                                title = row.episode.title ?: "Episode",
-                                podcastTitle = state.podcast.media.metadata.title ?: "",
-                            )
-                        },
+                        onTogglePlaylist = addToPlaylist,
+                        actions = EpisodeMenuActions(
+                            isFinished = row.isFinished,
+                            isDownloaded = isDownloaded,
+                            onResetProgress = {
+                                resetEpisodeProgress(app, scope, itemId, row.episode.id, durationSec)
+                            },
+                            onToggleFinished = {
+                                setEpisodeFinished(app, scope, itemId, row.episode.id, finished = !row.isFinished, durationSec = durationSec)
+                            },
+                            onAddToPlaylist = addToPlaylist,
+                            onGoToPodcast = null,
+                            onToggleDownload = {
+                                toggleEpisodeDownload(app, scope, itemId, row.episode.id, isDownloaded)
+                            },
+                        ),
                         isCurrent = playerState.mediaId == "episode:$itemId:${row.episode.id}",
                         isPlaying = playerState.isPlaying,
                         onClick = {
@@ -306,16 +327,17 @@ private fun EpisodeRow(
     onDownload: () -> Unit,
     inPlaylist: Boolean,
     onTogglePlaylist: () -> Unit,
+    actions: EpisodeMenuActions,
     isCurrent: Boolean,
     isPlaying: Boolean,
     onClick: () -> Unit,
 ) {
     val episode = row.episode
+    EpisodeLongPressBox(onClick = onClick, actions = actions, modifier = Modifier.fillMaxWidth()) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
         Column(Modifier.weight(1f)) {
@@ -413,5 +435,6 @@ private fun EpisodeRow(
                 modifier = Modifier.size(36.dp),
             )
         }
+    }
     }
 }

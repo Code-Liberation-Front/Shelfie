@@ -71,10 +71,12 @@ fun LatestScreen(
     app: ShelfieApp,
     controller: MediaController?,
     playerState: PlayerUiState,
+    onOpenPodcast: (String) -> Unit,
 ) {
     var refreshKey by remember { mutableIntStateOf(0) }
     var isRefreshing by remember { mutableStateOf(false) }
-    val ui by produceState<LatestUi>(initialValue = LatestUi.Loading, refreshKey) {
+    val progressRevision by app.repository.progressRevision.collectAsState()
+    val ui by produceState<LatestUi>(initialValue = LatestUi.Loading, refreshKey, progressRevision) {
         val force = refreshKey > 0
         value = withContext(Dispatchers.IO) {
             try {
@@ -110,7 +112,7 @@ fun LatestScreen(
         },
         modifier = Modifier.fillMaxSize(),
     ) {
-        LatestContent(app, controller, playerState, ui)
+        LatestContent(app, controller, playerState, onOpenPodcast, ui)
     }
 }
 
@@ -119,6 +121,7 @@ private fun LatestContent(
     app: ShelfieApp,
     controller: MediaController?,
     playerState: PlayerUiState,
+    onOpenPodcast: (String) -> Unit,
     ui: LatestUi,
 ) {
     when (val state = ui) {
@@ -163,6 +166,16 @@ private fun LatestContent(
                         else -> DownloadUi.None
                     }
                     val podcastTitle = state.podcastTitles[episode.libraryItemId] ?: ""
+                    val durationSec = (episode.audioTrack?.duration ?: episode.audioFile?.duration ?: 0.0)
+                    val isDownloaded = downloadUi is DownloadUi.Done
+                    val addToPlaylist = {
+                        pickerEntry = PlaylistEntry(
+                            itemId = episode.libraryItemId,
+                            episodeId = episode.id,
+                            title = episode.title ?: "Episode",
+                            podcastTitle = podcastTitle,
+                        )
+                    }
                     LatestEpisodeRow(
                         episode = episode,
                         progress = state.progress[episode.id],
@@ -185,14 +198,26 @@ private fun LatestContent(
                                 it.itemId == episode.libraryItemId && it.episodeId == episode.id
                             }
                         },
-                        onTogglePlaylist = {
-                            pickerEntry = PlaylistEntry(
-                                itemId = episode.libraryItemId,
-                                episodeId = episode.id,
-                                title = episode.title ?: "Episode",
-                                podcastTitle = podcastTitle,
-                            )
-                        },
+                        onTogglePlaylist = addToPlaylist,
+                        actions = EpisodeMenuActions(
+                            isFinished = state.progress[episode.id]?.isFinished == true,
+                            isDownloaded = isDownloaded,
+                            onResetProgress = {
+                                resetEpisodeProgress(app, scope, episode.libraryItemId, episode.id, durationSec)
+                            },
+                            onToggleFinished = {
+                                setEpisodeFinished(
+                                    app, scope, episode.libraryItemId, episode.id,
+                                    finished = state.progress[episode.id]?.isFinished != true,
+                                    durationSec = durationSec,
+                                )
+                            },
+                            onAddToPlaylist = addToPlaylist,
+                            onGoToPodcast = { onOpenPodcast(episode.libraryItemId) },
+                            onToggleDownload = {
+                                toggleEpisodeDownload(app, scope, episode.libraryItemId, episode.id, isDownloaded)
+                            },
+                        ),
                         onClick = {
                             controller?.let { c ->
                                 if (playerState.mediaId == episodeMediaId(episode.libraryItemId, episode.id)) {
@@ -222,13 +247,14 @@ private fun LatestEpisodeRow(
     onDownload: () -> Unit,
     inPlaylist: Boolean,
     onTogglePlaylist: () -> Unit,
+    actions: EpisodeMenuActions,
     onClick: () -> Unit,
 ) {
+    EpisodeLongPressBox(onClick = onClick, actions = actions, modifier = Modifier.fillMaxWidth()) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
         val completed = progress != null && isNearlyComplete(progress.fraction, progress.isFinished)
@@ -337,5 +363,6 @@ private fun LatestEpisodeRow(
             tint = MaterialTheme.colorScheme.primary,
             modifier = Modifier.size(34.dp),
         )
+    }
     }
 }

@@ -50,6 +50,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -73,6 +74,13 @@ private data class PlaylistRowMeta(
     val fraction: Float,
     val isFinished: Boolean,
     val publishDate: String,
+    val durationSec: Double,
+)
+
+private data class EpisodeInfo(
+    val publishedAt: Long?,
+    val pubDate: String?,
+    val durationSec: Double,
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -81,13 +89,21 @@ fun PlaylistScreen(
     app: ShelfieApp,
     controller: MediaController?,
     playerState: PlayerUiState,
+    onOpenPodcast: (String) -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
     val playlists by app.playlist.playlists.collectAsState()
     val downloaded by app.downloads.completed.collectAsState()
+    val progressRevision by app.repository.progressRevision.collectAsState()
     var selectedId by rememberSaveable { mutableStateOf(DOWNLOADED_PLAYLIST_ID) }
     var showCreateDialog by remember { mutableStateOf(false) }
     var addingToPlaylist by remember { mutableStateOf<String?>(null) }
+    var pickerEntry by remember { mutableStateOf<PlaylistEntry?>(null) }
     var isRefreshing by remember { mutableStateOf(false) }
+
+    pickerEntry?.let { entry ->
+        PlaylistPickerDialog(app = app, entry = entry, onDismiss = { pickerEntry = null })
+    }
 
     // Playlists are local state; refresh is a quick visual confirmation.
     LaunchedEffect(isRefreshing) {
@@ -127,14 +143,18 @@ fun PlaylistScreen(
     // Playlist entries only store title/podcast, so look up publish date and
     // listening progress for each row (cached, so this is cheap after the first
     // load and degrades gracefully offline).
-    val rowMeta by produceState(emptyMap<String, PlaylistRowMeta>(), rows) {
+    val rowMeta by produceState(emptyMap<String, PlaylistRowMeta>(), rows, progressRevision) {
         value = withContext(Dispatchers.IO) {
             runCatching {
-                val dates = mutableMapOf<String, Pair<Long?, String?>>()
+                val info = mutableMapOf<String, EpisodeInfo>()
                 rows.map { it.itemId }.distinct().forEach { id ->
                     runCatching {
                         app.repository.podcast(id).media.episodes.forEach { ep ->
-                            dates["$id:${ep.id}"] = ep.publishedAt to ep.pubDate
+                            info["$id:${ep.id}"] = EpisodeInfo(
+                                publishedAt = ep.publishedAt,
+                                pubDate = ep.pubDate,
+                                durationSec = (ep.audioTrack?.duration ?: ep.audioFile?.duration ?: 0.0),
+                            )
                         }
                     }
                 }
@@ -143,11 +163,12 @@ fun PlaylistScreen(
                     val prog = runCatching {
                         app.repository.progress(entry.itemId, entry.episodeId)
                     }.getOrNull()
-                    val (publishedAt, pubDate) = dates[key] ?: (null to null)
+                    val ei = info[key]
                     key to PlaylistRowMeta(
                         fraction = (prog?.progress ?: 0.0).toFloat().coerceIn(0f, 1f),
                         isFinished = prog?.isFinished == true,
-                        publishDate = formatEpisodeDate(publishedAt, pubDate),
+                        publishDate = formatEpisodeDate(ei?.publishedAt, ei?.pubDate),
+                        durationSec = ei?.durationSec ?: 0.0,
                     )
                 }
             }.getOrDefault(emptyMap())
@@ -245,12 +266,35 @@ fun PlaylistScreen(
 
         LazyColumn(Modifier.fillMaxSize()) {
             itemsIndexed(rows, key = { _, e -> "${e.itemId}:${e.episodeId}" }) { index, entry ->
+                val meta = rowMeta["${entry.itemId}:${entry.episodeId}"]
+                val isDownloaded = downloaded.any {
+                    it.itemId == entry.itemId && it.episodeId == entry.episodeId
+                }
                 PlaylistRow(
                     entry = entry,
                     coverUrl = app.repository.coverUrl(entry.itemId),
                     isCurrent = playerState.mediaId == episodeMediaId(entry.itemId, entry.episodeId),
-                    meta = rowMeta["${entry.itemId}:${entry.episodeId}"],
+                    meta = meta,
                     removable = selectedId != DOWNLOADED_PLAYLIST_ID,
+                    actions = EpisodeMenuActions(
+                        isFinished = meta?.isFinished == true,
+                        isDownloaded = isDownloaded,
+                        onResetProgress = {
+                            resetEpisodeProgress(app, scope, entry.itemId, entry.episodeId, meta?.durationSec ?: 0.0)
+                        },
+                        onToggleFinished = {
+                            setEpisodeFinished(
+                                app, scope, entry.itemId, entry.episodeId,
+                                finished = meta?.isFinished != true,
+                                durationSec = meta?.durationSec ?: 0.0,
+                            )
+                        },
+                        onAddToPlaylist = { pickerEntry = entry },
+                        onGoToPodcast = { onOpenPodcast(entry.itemId) },
+                        onToggleDownload = {
+                            toggleEpisodeDownload(app, scope, entry.itemId, entry.episodeId, isDownloaded)
+                        },
+                    ),
                     onClick = { controller?.playEntries(rows, index) },
                     onRemove = { app.playlist.removeFrom(selectedId, entry.itemId, entry.episodeId) },
                 )
@@ -539,16 +583,17 @@ private fun PlaylistRow(
     isCurrent: Boolean,
     meta: PlaylistRowMeta?,
     removable: Boolean,
+    actions: EpisodeMenuActions,
     onClick: () -> Unit,
     onRemove: () -> Unit,
 ) {
     val fraction = meta?.fraction ?: 0f
     val completed = isNearlyComplete(fraction, meta?.isFinished == true)
+    EpisodeLongPressBox(onClick = onClick, actions = actions, modifier = Modifier.fillMaxWidth()) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
         CoverImage(
@@ -610,5 +655,6 @@ private fun PlaylistRow(
                 )
             }
         }
+    }
     }
 }
