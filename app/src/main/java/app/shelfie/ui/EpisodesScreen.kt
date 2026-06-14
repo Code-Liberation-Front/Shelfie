@@ -43,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -162,36 +163,13 @@ fun EpisodesScreen(
                     }
                 }
                 items(state.episodes, key = { it.episode.id }) { row ->
-                    val downloadKey = app.downloads.key(itemId, row.episode.id)
-                    val downloadUi = when {
-                        completedDownloads.any { it.itemId == itemId && it.episodeId == row.episode.id } ->
-                            DownloadUi.Done
-
-                        activeDownloads.containsKey(downloadKey) ->
-                            DownloadUi.InProgress(activeDownloads[downloadKey]?.fraction ?: 0f)
-
-                        else -> DownloadUi.None
-                    }
                     val durationSec = (row.episode.audioTrack?.duration ?: row.episode.audioFile?.duration ?: 0.0)
-                    val isDownloaded = downloadUi is DownloadUi.Done
-                    val addToPlaylist = {
-                        pickerEntry = PlaylistEntry(
-                            itemId = itemId,
-                            episodeId = row.episode.id,
-                            title = row.episode.title ?: "Episode",
-                            podcastTitle = state.podcast.media.metadata.title ?: "",
-                        )
+                    val isDownloaded = completedDownloads.any {
+                        it.itemId == itemId && it.episodeId == row.episode.id
                     }
                     EpisodeRow(
                         row = row,
-                        downloadUi = downloadUi,
-                        onDownload = { app.downloads.download(state.podcast, row.episode) },
-                        inPlaylist = playlists.any { playlist ->
-                            playlist.entries.any {
-                                it.itemId == itemId && it.episodeId == row.episode.id
-                            }
-                        },
-                        onTogglePlaylist = addToPlaylist,
+                        coverUrl = app.repository.coverUrl(itemId),
                         actions = EpisodeMenuActions(
                             isFinished = row.isFinished,
                             isDownloaded = isDownloaded,
@@ -201,7 +179,14 @@ fun EpisodesScreen(
                             onToggleFinished = {
                                 setEpisodeFinished(app, scope, itemId, row.episode.id, finished = !row.isFinished, durationSec = durationSec)
                             },
-                            onAddToPlaylist = addToPlaylist,
+                            onAddToPlaylist = {
+                                pickerEntry = PlaylistEntry(
+                                    itemId = itemId,
+                                    episodeId = row.episode.id,
+                                    title = row.episode.title ?: "Episode",
+                                    podcastTitle = state.podcast.media.metadata.title ?: "",
+                                )
+                            },
                             onGoToPodcast = null,
                             onToggleDownload = {
                                 toggleEpisodeDownload(app, scope, itemId, row.episode.id, isDownloaded)
@@ -323,118 +308,60 @@ private fun TrackRow(
 @Composable
 private fun EpisodeRow(
     row: EpisodeRowData,
-    downloadUi: DownloadUi,
-    onDownload: () -> Unit,
-    inPlaylist: Boolean,
-    onTogglePlaylist: () -> Unit,
+    coverUrl: String,
     actions: EpisodeMenuActions,
     isCurrent: Boolean,
     isPlaying: Boolean,
     onClick: () -> Unit,
 ) {
     val episode = row.episode
+    val completed = isNearlyComplete(row.progressFraction, row.isFinished)
+    val durationSec = (episode.audioTrack?.duration ?: episode.audioFile?.duration ?: 0.0).toLong()
+    val dateLine = listOf(
+        formatEpisodeDate(episode.publishedAt, episode.pubDate),
+        formatDuration(durationSec),
+    )
+        .filter { it.isNotBlank() }
+        .joinToString(" • ")
     EpisodeLongPressBox(onClick = onClick, actions = actions, modifier = Modifier.fillMaxWidth()) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                episode.title ?: "Episode",
-                style = MaterialTheme.typography.titleSmall,
-                color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+        ) {
+            EpisodeRowContent(
+                coverUrl = coverUrl,
+                title = episode.title ?: "Episode",
+                subtitle = null,
+                dateLine = dateLine,
+                progressFraction = row.progressFraction,
+                completed = completed,
+                titleColor = if (isCurrent) MaterialTheme.colorScheme.primary else Color.Unspecified,
             )
-            Spacer(Modifier.height(4.dp))
-            val durationSec = (episode.audioTrack?.duration ?: episode.audioFile?.duration ?: 0.0).toLong()
-            val meta = listOf(
-                formatEpisodeDate(episode.publishedAt, episode.pubDate),
-                formatDuration(durationSec),
-            )
-                .filter { it.isNotBlank() }
-                .joinToString(" • ")
-            Text(
-                meta,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            if (row.progressFraction > 0.01f && !row.isFinished) {
-                Spacer(Modifier.height(6.dp))
-                LinearProgressIndicator(
-                    progress = { row.progressFraction },
-                    modifier = Modifier.fillMaxWidth().height(3.dp),
-                )
-            }
-        }
-        Spacer(Modifier.width(4.dp))
-        IconButton(onClick = onTogglePlaylist) {
-            Icon(
-                if (inPlaylist) Icons.Filled.PlaylistAddCheck else Icons.Filled.PlaylistAdd,
-                contentDescription = if (inPlaylist) "Remove from playlist" else "Add to playlist",
-                tint = if (inPlaylist) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        when (downloadUi) {
-            is DownloadUi.None -> IconButton(onClick = onDownload) {
-                Icon(
-                    Icons.Filled.Download,
-                    contentDescription = "Download",
+            Spacer(Modifier.width(4.dp))
+            when {
+                row.isFinished && !isCurrent -> Icon(
+                    Icons.Filled.CheckCircle,
+                    contentDescription = "Finished",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(36.dp),
                 )
-            }
 
-            is DownloadUi.InProgress -> Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier.size(48.dp),
-            ) {
-                if (downloadUi.fraction > 0f) {
-                    CircularProgressIndicator(
-                        progress = { downloadUi.fraction },
-                        modifier = Modifier.size(24.dp),
-                        strokeWidth = 2.dp,
-                    )
-                } else {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                }
-            }
-
-            is DownloadUi.Done -> Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier.size(48.dp),
-            ) {
-                Icon(
-                    Icons.Filled.DownloadDone,
-                    contentDescription = "Downloaded",
+                isCurrent && isPlaying -> Icon(
+                    Icons.Filled.PauseCircle,
+                    contentDescription = "Pause",
                     tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(36.dp),
+                )
+
+                else -> Icon(
+                    Icons.Filled.PlayCircle,
+                    contentDescription = "Play",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(36.dp),
                 )
             }
         }
-        Spacer(Modifier.width(4.dp))
-        when {
-            row.isFinished && !isCurrent -> Icon(
-                Icons.Filled.CheckCircle,
-                contentDescription = "Finished",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(36.dp),
-            )
-
-            isCurrent && isPlaying -> Icon(
-                Icons.Filled.PauseCircle,
-                contentDescription = "Pause",
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(36.dp),
-            )
-
-            else -> Icon(
-                Icons.Filled.PlayCircle,
-                contentDescription = "Play",
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(36.dp),
-            )
-        }
-    }
     }
 }

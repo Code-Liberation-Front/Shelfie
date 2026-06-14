@@ -1,9 +1,15 @@
 package app.shelfie.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -16,6 +22,8 @@ import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -23,11 +31,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import app.shelfie.ShelfieApp
@@ -36,27 +45,72 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * Single-line title that auto-scrolls (marquee) when it is wider than the
- * space available, and sits still otherwise.
+ * Shared cover + text block for every episode list row (Latest, Playlist,
+ * podcast detail, Search), so they all look identical: square cover, a title
+ * that wraps onto further lines until it fits, then the podcast name and the
+ * publish date/time each on their own line, and a thin progress bar.
+ *
+ * Call inside a [androidx.compose.foundation.layout.Row].
  */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun MarqueeText(
-    text: String,
-    style: TextStyle,
-    modifier: Modifier = Modifier,
-    color: Color = Color.Unspecified,
-    textAlign: TextAlign? = null,
+fun RowScope.EpisodeRowContent(
+    coverUrl: String,
+    title: String,
+    subtitle: String?,
+    dateLine: String,
+    progressFraction: Float,
+    completed: Boolean,
+    titleColor: Color = Color.Unspecified,
 ) {
-    Text(
-        text = text,
-        style = style,
-        color = color,
-        maxLines = 1,
-        softWrap = false,
-        textAlign = textAlign,
-        modifier = modifier.basicMarquee(),
+    CoverImage(
+        model = coverUrl,
+        contentDescription = null,
+        contentScale = ContentScale.Crop,
+        completed = completed,
+        modifier = Modifier
+            .size(56.dp)
+            .clip(RoundedCornerShape(8.dp)),
     )
+    Column(
+        Modifier
+            .weight(1f)
+            .padding(horizontal = 12.dp),
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            color = titleColor,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (!subtitle.isNullOrBlank()) {
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (dateLine.isNotBlank()) {
+            Text(
+                dateLine,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (progressFraction > 0.01f && !completed) {
+            Spacer(Modifier.height(6.dp))
+            LinearProgressIndicator(
+                progress = { progressFraction },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(3.dp),
+            )
+        }
+    }
 }
 
 /** Options shown in an episode's long-press context menu. */

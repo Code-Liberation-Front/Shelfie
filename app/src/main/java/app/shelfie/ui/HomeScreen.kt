@@ -252,9 +252,11 @@ private fun ContinueCard(
                     .height(3.dp),
             )
         }
-        MarqueeText(
+        Text(
             entry.episode.title ?: "Episode",
             style = MaterialTheme.typography.titleSmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 6.dp),

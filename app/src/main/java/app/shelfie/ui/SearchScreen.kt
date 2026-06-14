@@ -223,7 +223,12 @@ private fun PodcastResultRow(title: String, author: String, coverUrl: String, on
                 .clip(RoundedCornerShape(8.dp)),
         )
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
-            MarqueeText(title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.fillMaxWidth())
+            Text(
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
             if (author.isNotBlank()) {
                 Text(
                     author,
@@ -245,57 +250,34 @@ private fun EpisodeResultRow(
     actions: EpisodeMenuActions,
     onClick: () -> Unit,
 ) {
+    val durationSec = (episode.audioTrack?.duration ?: episode.audioFile?.duration ?: 0.0).toLong()
+    val dateLine = listOf(
+        formatEpisodeDate(episode.publishedAt, episode.pubDate),
+        formatDuration(durationSec),
+    )
+        .filter { it.isNotBlank() }
+        .joinToString(" • ")
     EpisodeLongPressBox(onClick = onClick, actions = actions, modifier = Modifier.fillMaxWidth()) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-    ) {
-        CoverImage(
-            model = coverUrl,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(8.dp)),
-        )
-        Column(
-            Modifier
-                .weight(1f)
-                .padding(horizontal = 12.dp),
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
         ) {
-            MarqueeText(
-                episode.title ?: "Episode",
-                style = MaterialTheme.typography.titleSmall,
-                modifier = Modifier.fillMaxWidth(),
+            EpisodeRowContent(
+                coverUrl = coverUrl,
+                title = episode.title ?: "Episode",
+                subtitle = podcastTitle,
+                dateLine = dateLine,
+                progressFraction = 0f,
+                completed = false,
             )
-            if (podcastTitle.isNotBlank()) {
-                Text(
-                    podcastTitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            val date = formatEpisodeDate(episode.publishedAt, episode.pubDate)
-            if (date.isNotBlank()) {
-                Text(
-                    date,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            Icon(
+                Icons.Filled.PlayCircle,
+                contentDescription = "Play",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(30.dp),
+            )
         }
-        Icon(
-            Icons.Filled.PlayCircle,
-            contentDescription = "Play",
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(30.dp),
-        )
-    }
     }
 }

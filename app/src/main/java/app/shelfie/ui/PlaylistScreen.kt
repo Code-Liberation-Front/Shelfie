@@ -56,6 +56,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -407,6 +408,67 @@ fun PlaylistPickerDialog(app: ShelfieApp, entry: PlaylistEntry, onDismiss: () ->
     )
 }
 
+/** Picks a playlist and adds every one of [entries] to it (used by bulk select). */
+@Composable
+fun BulkPlaylistPickerDialog(
+    app: ShelfieApp,
+    entries: List<PlaylistEntry>,
+    onDismiss: () -> Unit,
+) {
+    val playlists by app.playlist.playlists.collectAsState()
+    var newName by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add ${entries.size} to playlist") },
+        text = {
+            Column {
+                playlists.forEach { playlist ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                entries.forEach { app.playlist.addTo(playlist.id, it) }
+                                onDismiss()
+                            }
+                            .padding(vertical = 10.dp),
+                    ) {
+                        Text(
+                            playlist.name,
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        label = { Text("New playlist") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(
+                        onClick = {
+                            val id = app.playlist.create(newName)
+                            entries.forEach { app.playlist.addTo(id, it) }
+                            newName = ""
+                            onDismiss()
+                        },
+                        enabled = newName.isNotBlank(),
+                    ) {
+                        Text("Create")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Done") }
+        },
+    )
+}
+
 /** Search-and-add view shown when editing a playlist. */
 @Composable
 private fun AddEpisodesPane(
@@ -589,72 +651,37 @@ private fun PlaylistRow(
 ) {
     val fraction = meta?.fraction ?: 0f
     val completed = isNearlyComplete(fraction, meta?.isFinished == true)
+    val dateLine = listOf(
+        meta?.publishDate.orEmpty(),
+        formatDuration((meta?.durationSec ?: 0.0).toLong()),
+    )
+        .filter { it.isNotBlank() }
+        .joinToString(" • ")
     EpisodeLongPressBox(onClick = onClick, actions = actions, modifier = Modifier.fillMaxWidth()) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-    ) {
-        CoverImage(
-            model = coverUrl,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
-            completed = completed,
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
-                .size(48.dp)
-                .clip(RoundedCornerShape(8.dp)),
-        )
-        Column(
-            Modifier
-                .weight(1f)
-                .padding(horizontal = 12.dp),
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
         ) {
-            Text(
-                entry.title,
-                style = MaterialTheme.typography.titleSmall,
-                color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis,
+            EpisodeRowContent(
+                coverUrl = coverUrl,
+                title = entry.title,
+                subtitle = entry.podcastTitle,
+                dateLine = dateLine,
+                progressFraction = fraction,
+                completed = completed,
+                titleColor = if (isCurrent) MaterialTheme.colorScheme.primary else Color.Unspecified,
             )
-            if (entry.podcastTitle.isNotBlank()) {
-                Text(
-                    entry.podcastTitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            val publishDate = meta?.publishDate
-            if (!publishDate.isNullOrBlank()) {
-                Text(
-                    publishDate,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (fraction > 0.01f && !completed) {
-                Spacer(Modifier.height(6.dp))
-                LinearProgressIndicator(
-                    progress = { fraction },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(3.dp),
-                )
+            if (removable) {
+                IconButton(onClick = onRemove) {
+                    Icon(
+                        Icons.Filled.PlaylistRemove,
+                        contentDescription = "Remove from playlist",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
-        if (removable) {
-            IconButton(onClick = onRemove) {
-                Icon(
-                    Icons.Filled.PlaylistRemove,
-                    contentDescription = "Remove from playlist",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
     }
 }

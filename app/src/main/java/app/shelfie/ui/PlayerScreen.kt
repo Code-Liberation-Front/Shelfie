@@ -150,10 +150,12 @@ fun PlayerScreen(
         )
         Spacer(Modifier.height(24.dp))
 
-        MarqueeText(
+        Text(
             state.title,
             style = MaterialTheme.typography.titleLarge,
             textAlign = TextAlign.Center,
+            maxLines = 3,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.fillMaxWidth(),
         )
         Text(
