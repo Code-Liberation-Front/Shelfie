@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -59,9 +60,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.session.MediaController
@@ -283,42 +286,77 @@ fun PlaylistScreen(
             }
         }
 
-        LazyColumn(Modifier.fillMaxSize()) {
-            itemsIndexed(rows, key = { _, e -> "${e.itemId}:${e.episodeId}" }) { index, entry ->
+        val listState = rememberLazyListState()
+        val reorderable = selectedId != DOWNLOADED_PLAYLIST_ID
+        var localOrder by remember(selectedId, rows) { mutableStateOf(rows) }
+        val displayRows = if (reorderable) localOrder else rows
+        val dragState = rememberDragDropState(
+            listState = listState,
+            onMove = { from, to ->
+                localOrder = localOrder.toMutableList().apply { add(to, removeAt(from)) }
+            },
+            onDrop = { app.playlist.setEntries(selectedId, localOrder) },
+        )
+
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+            itemsIndexed(displayRows, key = { _, e -> "${e.itemId}:${e.episodeId}" }) { index, entry ->
                 val meta = rowMeta["${entry.itemId}:${entry.episodeId}"]
                 val isDownloaded = downloaded.any {
                     it.itemId == entry.itemId && it.episodeId == entry.episodeId
                 }
-                PlaylistRow(
-                    entry = entry,
-                    coverUrl = app.repository.coverUrl(entry.itemId),
-                    isCurrent = playerState.mediaId == episodeMediaId(entry.itemId, entry.episodeId),
-                    meta = meta,
-                    downloadUi = downloadUiFor(app, activeDownloads, downloaded, entry.itemId, entry.episodeId),
-                    removable = selectedId != DOWNLOADED_PLAYLIST_ID,
-                    actions = EpisodeMenuActions(
-                        isFinished = meta?.isFinished == true,
-                        isDownloaded = isDownloaded,
-                        onResetProgress = {
-                            resetEpisodeProgress(app, scope, entry.itemId, entry.episodeId, meta?.durationSec ?: 0.0)
+                val dragging = dragState.draggingItemIndex == index
+                Column(
+                    modifier = if (dragging) {
+                        Modifier
+                            .zIndex(1f)
+                            .graphicsLayer { translationY = dragState.draggingItemOffset }
+                    } else {
+                        Modifier
+                    },
+                ) {
+                    PlaylistRow(
+                        entry = entry,
+                        coverUrl = app.repository.coverUrl(entry.itemId),
+                        isCurrent = playerState.mediaId == episodeMediaId(entry.itemId, entry.episodeId),
+                        meta = meta,
+                        downloadUi = downloadUiFor(app, activeDownloads, downloaded, entry.itemId, entry.episodeId),
+                        removable = selectedId != DOWNLOADED_PLAYLIST_ID,
+                        actions = EpisodeMenuActions(
+                            isFinished = meta?.isFinished == true,
+                            isDownloaded = isDownloaded,
+                            onResetProgress = {
+                                resetEpisodeProgress(app, scope, entry.itemId, entry.episodeId, meta?.durationSec ?: 0.0)
+                            },
+                            onToggleFinished = {
+                                setEpisodeFinished(
+                                    app, scope, entry.itemId, entry.episodeId,
+                                    finished = meta?.isFinished != true,
+                                    durationSec = meta?.durationSec ?: 0.0,
+                                )
+                            },
+                            onAddToPlaylist = { pickerEntry = entry },
+                            onGoToPodcast = { onOpenPodcast(entry.itemId) },
+                            onToggleDownload = {
+                                toggleEpisodeDownload(app, scope, entry.itemId, entry.episodeId, isDownloaded)
+                            },
+                        ),
+                        reorderHandle = if (reorderable) {
+                            {
+                                DragHandle(
+                                    state = dragState,
+                                    key = "${entry.itemId}:${entry.episodeId}",
+                                    index = index,
+                                    modifier = Modifier.size(28.dp),
+                                )
+                            }
+                        } else {
+                            null
                         },
-                        onToggleFinished = {
-                            setEpisodeFinished(
-                                app, scope, entry.itemId, entry.episodeId,
-                                finished = meta?.isFinished != true,
-                                durationSec = meta?.durationSec ?: 0.0,
-                            )
-                        },
-                        onAddToPlaylist = { pickerEntry = entry },
-                        onGoToPodcast = { onOpenPodcast(entry.itemId) },
-                        onToggleDownload = {
-                            toggleEpisodeDownload(app, scope, entry.itemId, entry.episodeId, isDownloaded)
-                        },
-                    ),
-                    onClick = { controller?.playEntries(rows, index) },
-                    onRemove = { app.playlist.removeFrom(selectedId, entry.itemId, entry.episodeId) },
-                )
-                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                        onClick = { controller?.playEntries(displayRows, index) },
+                        onRemove = { app.playlist.removeFrom(selectedId, entry.itemId, entry.episodeId) },
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+                }
             }
         }
         }
@@ -666,6 +704,7 @@ private fun PlaylistRow(
     downloadUi: DownloadUi,
     removable: Boolean,
     actions: EpisodeMenuActions,
+    reorderHandle: (@Composable () -> Unit)? = null,
     onClick: () -> Unit,
     onRemove: () -> Unit,
 ) {
@@ -703,6 +742,7 @@ private fun PlaylistRow(
                     )
                 }
             }
+            reorderHandle?.invoke()
         }
     }
 }
