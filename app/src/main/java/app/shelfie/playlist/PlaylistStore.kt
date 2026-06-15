@@ -74,6 +74,15 @@ class PlaylistStore(context: Context) {
         )
     }
 
+    /** Replaces a playlist's entries (e.g. after a drag-to-reorder). */
+    fun setEntries(playlistId: String, entries: List<PlaylistEntry>) {
+        update(
+            _playlists.value.map { playlist ->
+                if (playlist.id == playlistId) playlist.copy(entries = entries) else playlist
+            },
+        )
+    }
+
     fun toggleIn(playlistId: String, entry: PlaylistEntry) {
         val playlist = _playlists.value.firstOrNull { it.id == playlistId } ?: return
         if (playlist.entries.any { it.matches(entry) }) {
