@@ -121,15 +121,21 @@ class PlaybackService : MediaLibraryService() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        // Pin each skip action to an explicit slot so surfaces that place
+        // buttons by slot (Android Auto) keep back-10 on the left and
+        // forward-30 on the right. Without slots, Auto orders the two custom
+        // actions by its own heuristics and renders them flipped.
         val skipBackButton = CommandButton.Builder()
             .setDisplayName("Back 10 seconds")
             .setIconResId(R.drawable.ic_skip_back_10)
             .setSessionCommand(SessionCommand(COMMAND_SKIP_BACK, Bundle.EMPTY))
+            .setSlots(CommandButton.SLOT_BACK)
             .build()
         val skipForwardButton = CommandButton.Builder()
             .setDisplayName("Forward 30 seconds")
             .setIconResId(R.drawable.ic_skip_forward_30)
             .setSessionCommand(SessionCommand(COMMAND_SKIP_FORWARD, Bundle.EMPTY))
+            .setSlots(CommandButton.SLOT_FORWARD)
             .build()
         mediaSession = MediaLibrarySession.Builder(this, player, LibraryCallback())
             .setSessionActivity(sessionActivity)
