@@ -168,13 +168,16 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     private func reloadDownloads() {
         let list = DownloadCenter.shared.downloaded.sorted { $0.downloadedAt > $1.downloadedAt }
         let items = list.enumerated().map { index, entry in
-            let item = CPListItem(text: entry.title, detailText: entry.podcastTitle)
             let progress = AppState.shared.progressFor(
                 itemId: entry.itemId, episodeId: entry.episodeId
             )
-            if progress?.finished == true {
-                item.accessoryImage = UIImage(systemName: "checkmark.circle")
-            } else if let fraction = progress?.progress, fraction > 0.01 {
+            let item = CPListItem(
+                text: entry.title, detailText: entry.podcastTitle, image: nil,
+                accessoryImage: progress?.finished == true
+                    ? UIImage(systemName: "checkmark.circle") : nil,
+                accessoryType: .none
+            )
+            if progress?.finished != true, let fraction = progress?.progress, fraction > 0.01 {
                 item.playbackProgress = CGFloat(min(fraction, 1))
             }
             item.handler = { [weak self] _, completion in
@@ -193,14 +196,16 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 
     @MainActor
     private func episodeItem(podcast: LibraryItemExpanded, episode: PodcastEpisode) -> CPListItem {
+        let progress = AppState.shared.progressFor(itemId: podcast.id, episodeId: episode.id)
         let item = CPListItem(
             text: episode.title ?? "Episode",
-            detailText: formatDuration(episode.durationSec)
+            detailText: formatDuration(episode.durationSec),
+            image: nil,
+            accessoryImage: progress?.finished == true
+                ? UIImage(systemName: "checkmark.circle") : nil,
+            accessoryType: .none
         )
-        let progress = AppState.shared.progressFor(itemId: podcast.id, episodeId: episode.id)
-        if progress?.finished == true {
-            item.accessoryImage = UIImage(systemName: "checkmark.circle")
-        } else if let fraction = progress?.progress, fraction > 0.01 {
+        if progress?.finished != true, let fraction = progress?.progress, fraction > 0.01 {
             item.playbackProgress = CGFloat(min(fraction, 1))
         }
         item.isPlaying = PlayerManager.shared.current?.mediaId == "episode:\(podcast.id):\(episode.id)"
