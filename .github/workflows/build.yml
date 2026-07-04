@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish to Google Play internal testing'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -14,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UPLOAD_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEYSTORE_BASE64 }}
+      PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,6 +44,11 @@ jobs:
             echo "UPLOAD_KEY_PASSWORD=${{ secrets.UPLOAD_KEY_PASSWORD }}"
           } >> "$GITHUB_ENV"
 
+      - name: Set Play version code
+        # Play requires a strictly increasing versionCode; offset keeps CI
+        # codes above the manually-uploaded baseline (19).
+        run: echo "VERSION_CODE=$((1000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
+
       - name: Build debug APK and release bundle
         run: ./gradlew --no-daemon assembleDebug bundleRelease
 
@@ -57,6 +68,20 @@ jobs:
         with:
           name: shelfie-release-aab
           path: shelfie-release.aab
+
+      - name: Publish to Google Play internal testing
+        # Runs on tag pushes and on manual dispatch with publish=true, when
+        # both the Play service account and the upload keystore are set.
+        if: >-
+          env.PLAY_SERVICE_ACCOUNT_JSON != '' && env.UPLOAD_KEYSTORE_BASE64 != '' &&
+          (startsWith(github.ref, 'refs/tags/') || inputs.publish)
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.shelfie.zbuddy
+          releaseFiles: app/build/outputs/bundle/release/app-release.aab
+          track: internal
+          status: completed
 
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/')

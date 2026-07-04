@@ -14,7 +14,9 @@ android {
         applicationId = "com.shelfie.zbuddy"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
+        // CI supplies an auto-incrementing code for Play uploads; local
+        // builds fall back to the fixed baseline.
+        versionCode = System.getenv("VERSION_CODE")?.toIntOrNull() ?: 19
         versionName = "0.9.2"
     }
 
