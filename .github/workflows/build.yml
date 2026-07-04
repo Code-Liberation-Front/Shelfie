@@ -70,10 +70,11 @@ jobs:
           path: shelfie-release.aab
 
       - name: Publish to Google Play internal testing
-        # Runs on tag pushes and on manual dispatch with publish=true, when
-        # both the Play service account and the upload keystore are set.
+        # Runs on tag pushes and on manual dispatch with publish=true. The
+        # bundle is signed by the shared keystore (or the private upload key
+        # when its secrets are set) — the same key past Play uploads used.
         if: >-
-          env.PLAY_SERVICE_ACCOUNT_JSON != '' && env.UPLOAD_KEYSTORE_BASE64 != '' &&
+          env.PLAY_SERVICE_ACCOUNT_JSON != '' &&
           (startsWith(github.ref, 'refs/tags/') || inputs.publish)
         uses: r0adkll/upload-google-play@v1
         with:
