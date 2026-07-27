@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       UPLOAD_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEYSTORE_BASE64 }}
+      PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,6 +46,28 @@ jobs:
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk shelfie-debug.apk
           cp app/build/outputs/bundle/release/app-release.aab shelfie-release.aab
+
+      # Play only accepts bundles signed with the registered upload key, so the
+      # upload keystore has to be in play too - the fallback shared keystore
+      # would be rejected.
+      - name: Publish to Play internal testing
+        if: env.PLAY_SERVICE_ACCOUNT_JSON != '' && env.UPLOAD_KEYSTORE_BASE64 != ''
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.shelfie.zbuddy
+          releaseFiles: shelfie-release.aab
+          track: internal
+          status: completed
+
+      - name: Explain skipped Play upload
+        if: env.PLAY_SERVICE_ACCOUNT_JSON == '' || env.UPLOAD_KEYSTORE_BASE64 == ''
+        run: |
+          echo "::notice::Skipped the Play internal-track upload. It needs both" \
+            "PLAY_SERVICE_ACCOUNT_JSON (a Play Console service-account key with" \
+            "release permissions) and UPLOAD_KEYSTORE_BASE64 as repository secrets." \
+            "PLAY_SERVICE_ACCOUNT_JSON set: ${{ env.PLAY_SERVICE_ACCOUNT_JSON != '' }}." \
+            "UPLOAD_KEYSTORE_BASE64 set: ${{ env.UPLOAD_KEYSTORE_BASE64 != '' }}."
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
