@@ -26,7 +26,6 @@ import androidx.compose.material.icons.filled.Forward30
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -54,12 +53,14 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.media3.session.MediaController
+import app.shelfie.R
 import app.shelfie.ui.theme.ShelfieSurface
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -182,7 +183,11 @@ fun PlayerScreen(
             horizontalArrangement = Arrangement.spacedBy(24.dp),
         ) {
             IconButton(onClick = { controller?.seekBack() }, modifier = Modifier.size(64.dp)) {
-                Icon(Icons.Filled.Replay10, contentDescription = "Back 10 seconds", modifier = Modifier.size(40.dp))
+                Icon(
+                    painterResource(R.drawable.ic_skip_back_15),
+                    contentDescription = "Back 15 seconds",
+                    modifier = Modifier.size(40.dp),
+                )
             }
             FilledIconButton(
                 onClick = { controller?.let { if (it.isPlaying) it.pause() else it.play() } },
@@ -339,7 +344,7 @@ fun NowPlayingBar(
             )
         }
         IconButton(onClick = { controller?.seekBack() }) {
-            Icon(Icons.Filled.Replay10, contentDescription = "Back 10 seconds")
+            Icon(painterResource(R.drawable.ic_skip_back_15), contentDescription = "Back 15 seconds")
         }
         IconButton(onClick = { controller?.let { if (it.isPlaying) it.pause() else it.play() } }) {
             if (state.isLoading) {

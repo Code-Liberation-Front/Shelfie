@@ -18,7 +18,7 @@ Shelfie connects to your self-hosted Audiobookshelf server and turns your podcas
 - **Stream episodes** with background playback, media notification, lockscreen/Bluetooth controls
 - **Android Auto** — browse podcasts and episodes and control playback from your car
 - **Playback speed** from 0.75x to 3x
-- **Overcast-style skips** — 30s forward, 10s back
+- **Overcast-style skips** — 30s forward, 15s back
 - **Progress sync** — listening position is saved back to Audiobookshelf every few seconds and resumes on any device, picking up exactly where you left off
 
 ## Download

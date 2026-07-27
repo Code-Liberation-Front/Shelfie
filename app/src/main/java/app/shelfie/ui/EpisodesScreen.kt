@@ -27,15 +27,18 @@ import androidx.compose.material.icons.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.PlaylistAddCheck
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -79,6 +82,7 @@ private sealed interface EpisodesUi {
     ) : EpisodesUi
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EpisodesScreen(
     app: ShelfieApp,
@@ -87,16 +91,27 @@ fun EpisodesScreen(
     playerState: PlayerUiState,
     onBack: () -> Unit,
 ) {
+    var refreshKey by remember(itemId) { mutableIntStateOf(0) }
+    var isRefreshing by remember(itemId) { mutableStateOf(false) }
     val progressRevision by app.repository.progressRevision.collectAsState()
-    val ui by produceState<EpisodesUi>(initialValue = EpisodesUi.Loading, itemId, progressRevision) {
+    val ui by produceState<EpisodesUi>(
+        initialValue = EpisodesUi.Loading,
+        itemId,
+        progressRevision,
+        refreshKey,
+    ) {
+        // A pull-to-refresh re-reads the podcast (new episodes) and the
+        // server-side progress, bypassing both caches.
+        val force = refreshKey > 0
+        val progressMaxAgeMs = if (force) 0L else 30_000L
         value = withContext(Dispatchers.IO) {
             try {
-                val podcast = app.repository.podcast(itemId)
+                val podcast = app.repository.podcast(itemId, forceRefresh = force)
                 val rows = podcast.media.episodes
                     .sortedByDescending { it.publishedAt ?: 0 }
                     .map { episode ->
                         val progress = runCatching {
-                            app.repository.progress(itemId, episode.id)
+                            app.repository.progress(itemId, episode.id, progressMaxAgeMs)
                         }.getOrNull()
                         EpisodeRowData(
                             episode = episode,
@@ -106,7 +121,9 @@ fun EpisodesScreen(
                     }
                 // Audiobook/MP3 items have a single whole-item progress.
                 val bookFinished = if (podcast.media.episodes.isEmpty() && podcast.media.tracks.isNotEmpty()) {
-                    runCatching { app.repository.bookProgress(itemId)?.isFinished == true }.getOrDefault(false)
+                    runCatching {
+                        app.repository.bookProgress(itemId, progressMaxAgeMs)?.isFinished == true
+                    }.getOrDefault(false)
                 } else {
                     false
                 }
@@ -115,8 +132,30 @@ fun EpisodesScreen(
                 EpisodesUi.Error(e.message ?: "Failed to load episodes")
             }
         }
+        isRefreshing = false
     }
 
+    PullToRefreshBox(
+        isRefreshing = isRefreshing,
+        onRefresh = {
+            isRefreshing = true
+            refreshKey++
+        },
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        EpisodesContent(app, itemId, controller, playerState, onBack, ui)
+    }
+}
+
+@Composable
+private fun EpisodesContent(
+    app: ShelfieApp,
+    itemId: String,
+    controller: MediaController?,
+    playerState: PlayerUiState,
+    onBack: () -> Unit,
+    ui: EpisodesUi,
+) {
     when (val state = ui) {
         is EpisodesUi.Loading -> {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

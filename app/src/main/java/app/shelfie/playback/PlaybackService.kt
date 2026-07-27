@@ -1,6 +1,7 @@
 package app.shelfie.playback
 
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.media.audiofx.DynamicsProcessing
 import android.net.Uri
@@ -17,7 +18,9 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.CommandButton
+import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaConstants
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.MediaSession
@@ -82,8 +85,11 @@ private const val STATUS_PARTIALLY_PLAYED = 1
 private const val STATUS_FULLY_PLAYED = 2
 
 // Custom session commands so Android Auto shows the app's skip buttons.
-private const val COMMAND_SKIP_BACK = "app.shelfie.SKIP_BACK_10"
+private const val COMMAND_SKIP_BACK = "app.shelfie.SKIP_BACK_15"
 private const val COMMAND_SKIP_FORWARD = "app.shelfie.SKIP_FORWARD_30"
+
+private const val SKIP_BACK_MS = 15_000L
+private const val SKIP_FORWARD_MS = 30_000L
 
 @UnstableApi
 class PlaybackService : MediaLibraryService() {
@@ -110,8 +116,8 @@ class PlaybackService : MediaLibraryService() {
                 /* handleAudioFocus= */ true,
             )
             .setHandleAudioBecomingNoisy(true)
-            .setSeekBackIncrementMs(10_000)
-            .setSeekForwardIncrementMs(30_000)
+            .setSeekBackIncrementMs(SKIP_BACK_MS)
+            .setSeekForwardIncrementMs(SKIP_FORWARD_MS)
             .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
 
@@ -121,26 +127,38 @@ class PlaybackService : MediaLibraryService() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        // Pin each skip action to an explicit slot so surfaces that place
-        // buttons by slot (Android Auto) keep back-10 on the left and
-        // forward-30 on the right. Without slots, Auto orders the two custom
-        // actions by its own heuristics and renders them flipped.
+        // Both skips are custom session commands, because Android Auto only
+        // lays out custom actions and never the player's own seek-back/forward
+        // commands. The wanted row is: back 15, previous, play/pause, next,
+        // forward 30 - so each skip asks for the *secondary* back/forward slot,
+        // the one outside the previous/next pair.
         val skipBackButton = CommandButton.Builder()
-            .setDisplayName("Back 10 seconds")
-            .setIconResId(R.drawable.ic_skip_back_10)
+            .setDisplayName("Back 15 seconds")
+            .setIconResId(R.drawable.ic_skip_back_15)
             .setSessionCommand(SessionCommand(COMMAND_SKIP_BACK, Bundle.EMPTY))
-            .setSlots(CommandButton.SLOT_BACK)
+            .setSlots(CommandButton.SLOT_BACK_SECONDARY, CommandButton.SLOT_OVERFLOW)
             .build()
         val skipForwardButton = CommandButton.Builder()
             .setDisplayName("Forward 30 seconds")
             .setIconResId(R.drawable.ic_skip_forward_30)
             .setSessionCommand(SessionCommand(COMMAND_SKIP_FORWARD, Bundle.EMPTY))
-            .setSlots(CommandButton.SLOT_FORWARD)
+            .setSlots(CommandButton.SLOT_FORWARD_SECONDARY, CommandButton.SLOT_OVERFLOW)
             .build()
+        // Android Auto keeps previous/next in the two slots either side of
+        // play/pause and fills the outer slots with the custom actions, but it
+        // only holds those inner slots open when the session reserves them.
+        // Without the reservation the skips slide inwards and Auto ends up
+        // drawing previous, next, play/pause and then both skips.
+        val sessionExtras = Bundle().apply {
+            putBoolean(MediaConstants.EXTRAS_KEY_SLOT_RESERVATION_SEEK_TO_PREV, true)
+            putBoolean(MediaConstants.EXTRAS_KEY_SLOT_RESERVATION_SEEK_TO_NEXT, true)
+        }
         mediaSession = MediaLibrarySession.Builder(this, player, LibraryCallback())
             .setSessionActivity(sessionActivity)
             .setCustomLayout(listOf(skipBackButton, skipForwardButton))
+            .setSessionExtras(sessionExtras)
             .build()
+        setMediaNotificationProvider(SkipFirstNotificationProvider(applicationContext))
 
         player.addListener(object : Player.Listener {
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -203,7 +221,12 @@ class PlaybackService : MediaLibraryService() {
     private fun initCast() {
         runCatching {
             val castContext = CastContext.getSharedInstance(this)
-            castPlayer = CastPlayer(castContext, DefaultMediaItemConverter(), 10_000, 30_000).apply {
+            castPlayer = CastPlayer(
+                castContext,
+                DefaultMediaItemConverter(),
+                SKIP_BACK_MS,
+                SKIP_FORWARD_MS,
+            ).apply {
                 setSessionAvailabilityListener(object : SessionAvailabilityListener {
                     override fun onCastSessionAvailable() = switchPlayer(this@apply)
                     override fun onCastSessionUnavailable() = switchPlayer(player)
@@ -634,7 +657,7 @@ class PlaybackService : MediaLibraryService() {
             return MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0)
         }
         val podcast = try {
-            repo.podcast(parts[1])
+            podcastWithEpisode(parts[1], parts[2])
         } catch (e: Exception) {
             // Offline with no cached metadata: fall back to the downloaded copy.
             val downloaded = downloadedEpisodeItem(parts[1], parts[2])
@@ -652,7 +675,18 @@ class PlaybackService : MediaLibraryService() {
             podcast.media.episodes.filter { it.id == parts[2] }
         }
         if (episodes.isEmpty()) {
-            return MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0)
+            // The podcast still doesn't know this episode (removed server-side,
+            // or the refresh failed). Play the downloaded copy if there is one:
+            // handing back an empty queue makes Media3 treat the request as
+            // "nothing to play" and fall back to playback resumption, which
+            // silently restarts whatever was playing before.
+            val downloaded = downloadedEpisodeItem(parts[1], parts[2])
+                ?: return MediaSession.MediaItemsWithStartPosition(emptyList(), 0, 0)
+            var position = startPositionMs
+            if (position == C.TIME_UNSET) {
+                position = savedPositionMs(mediaId)
+            }
+            return MediaSession.MediaItemsWithStartPosition(listOf(downloaded), 0, position)
         }
         val queue = episodes.map { episodeItem(podcast, it, withUri = true) }
         var position = startPositionMs
@@ -660,6 +694,23 @@ class PlaybackService : MediaLibraryService() {
             position = savedPositionMs(mediaId)
         }
         return MediaSession.MediaItemsWithStartPosition(queue, 0, position)
+    }
+
+    /**
+     * Loads a podcast, refreshing it from the server when the wanted episode is
+     * missing from the cached copy.
+     *
+     * A just-published episode reaches the Latest list (and Android Auto's
+     * browse tree) through the recent-episodes endpoint, while the cached
+     * library item is whatever was fetched the last time the podcast was
+     * opened. Without the refresh the episode can't be found, the queue comes
+     * back empty, and the tap ends up resuming the previous episode instead of
+     * loading the new one.
+     */
+    private suspend fun podcastWithEpisode(itemId: String, episodeId: String): LibraryItemExpanded {
+        val cached = repo.podcast(itemId)
+        if (cached.media.episodes.any { it.id == episodeId }) return cached
+        return runCatching { repo.podcast(itemId, forceRefresh = true) }.getOrDefault(cached)
     }
 
     private suspend fun buildAutoPlayQueue(
@@ -874,7 +925,7 @@ class PlaybackService : MediaLibraryService() {
         if (parts.size != 3) return null
         return try {
             if (!repo.ensureConfigured()) return downloadedEpisodeItem(parts[1], parts[2])
-            val podcast = repo.podcast(parts[1])
+            val podcast = podcastWithEpisode(parts[1], parts[2])
             val episode = podcast.media.episodes.firstOrNull { it.id == parts[2] }
                 ?: return downloadedEpisodeItem(parts[1], parts[2])
             episodeItem(podcast, episode, withUri = true)
@@ -951,4 +1002,38 @@ class PlaybackService : MediaLibraryService() {
     }
 
     // endregion
+}
+
+/**
+ * Lays the notification out as back-15, previous, play/pause, next, forward-30.
+ *
+ * The default provider always emits the transport controls first and appends
+ * the custom actions after them, which strands both skip buttons at the
+ * right-hand end of the notification.
+ */
+@UnstableApi
+private class SkipFirstNotificationProvider(context: Context) :
+    DefaultMediaNotificationProvider(context) {
+
+    override fun getMediaButtons(
+        session: MediaSession,
+        playerCommands: Player.Commands,
+        mediaButtonPreferences: ImmutableList<CommandButton>,
+        showPauseButton: Boolean,
+    ): ImmutableList<CommandButton> {
+        val buttons = super.getMediaButtons(session, playerCommands, mediaButtonPreferences, showPauseButton)
+        val skipBack = buttons.firstOrNull { it.sessionCommand?.customAction == COMMAND_SKIP_BACK }
+        val skipForward = buttons.firstOrNull { it.sessionCommand?.customAction == COMMAND_SKIP_FORWARD }
+        val ordered = mutableListOf<CommandButton>()
+        skipBack?.let { ordered.add(it) }
+        // The transport controls keep the provider's own order: previous,
+        // play/pause, next.
+        buttons.filterTo(ordered) { it.sessionCommand == null }
+        skipForward?.let { ordered.add(it) }
+        // Any other custom action stays behind the five main controls.
+        buttons.filterTo(ordered) {
+            it.sessionCommand != null && it !== skipBack && it !== skipForward
+        }
+        return ImmutableList.copyOf(ordered)
+    }
 }
