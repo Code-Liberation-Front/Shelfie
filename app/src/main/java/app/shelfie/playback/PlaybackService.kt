@@ -40,6 +40,7 @@ import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
@@ -263,7 +264,15 @@ class PlaybackService : MediaLibraryService() {
     }
 
     override fun onDestroy() {
+        // Read the position before anything is torn down, and hand the write to
+        // a scope that outlives the service - cancelling serviceScope below
+        // would otherwise kill the save that matters most, the one issued as the
+        // car disconnects and the service is stopped.
+        val finalProgress = progressSnapshot()
         serviceScope.cancel()
+        if (finalProgress != null) {
+            app.appScope.launch { report(finalProgress) }
+        }
         runCatching { dynamicsProcessing?.release() }
         dynamicsProcessing = null
         mediaSession?.release()
@@ -286,39 +295,72 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
-    /** Reads player state on the main thread, then reports progress to the server. */
-    private suspend fun pushProgress() {
-        val current = activePlayer ?: return
-        val mediaId = current.currentMediaItem?.mediaId ?: return
-        if (current.playbackState != Player.STATE_READY && current.playbackState != Player.STATE_ENDED) return
-        val parts = mediaId.split(":", limit = 3)
-        if (parts.size != 3) return
-        val positionMs = current.currentPosition
-        app.settings.saveLastPlayed(mediaId, positionMs)
-        when {
-            mediaId.startsWith(EPISODE_PREFIX) -> {
-                val durationMs = current.duration
-                val durationSec = if (durationMs != C.TIME_UNSET) durationMs / 1000.0 else 0.0
-                withContext(Dispatchers.IO) {
-                    runCatching {
-                        if (repo.ensureConfigured()) {
-                            repo.updateProgress(parts[1], parts[2], positionMs / 1000.0, durationSec)
-                        }
-                    }
-                }
-            }
+    /** Everything needed to report a position, readable without the player. */
+    private data class ProgressSnapshot(
+        val mediaId: String,
+        val positionMs: Long,
+        val durationMs: Long,
+        val trackStartOffset: Double,
+        val bookDuration: Double,
+    )
 
-            mediaId.startsWith(TRACK_PREFIX) -> {
-                // Book progress is reported against the whole book timeline.
-                val extras = current.currentMediaItem?.mediaMetadata?.extras
-                val startOffset = extras?.getDouble(EXTRA_TRACK_START_OFFSET) ?: 0.0
-                val bookDuration = extras?.getDouble(EXTRA_BOOK_DURATION) ?: 0.0
-                withContext(Dispatchers.IO) {
-                    runCatching {
-                        if (repo.ensureConfigured()) {
-                            repo.updateProgress(parts[1], "", startOffset + positionMs / 1000.0, bookDuration)
-                        }
+    /**
+     * Reads the player on the main thread. Only a player with nothing loaded is
+     * skipped: a paused or re-buffering player still knows exactly where it is,
+     * and dropping those reports is how a position gets lost.
+     */
+    private fun progressSnapshot(): ProgressSnapshot? {
+        val current = activePlayer ?: return null
+        val item = current.currentMediaItem ?: return null
+        if (current.playbackState == Player.STATE_IDLE) return null
+        if (item.mediaId.split(":", limit = 3).size != 3) return null
+        val extras = item.mediaMetadata.extras
+        return ProgressSnapshot(
+            mediaId = item.mediaId,
+            positionMs = current.currentPosition,
+            durationMs = current.duration,
+            trackStartOffset = extras?.getDouble(EXTRA_TRACK_START_OFFSET) ?: 0.0,
+            bookDuration = extras?.getDouble(EXTRA_BOOK_DURATION) ?: 0.0,
+        )
+    }
+
+    private suspend fun pushProgress() {
+        report(progressSnapshot() ?: return)
+    }
+
+    /**
+     * Saves a position locally and then reports it to the server.
+     *
+     * The local save is [NonCancellable] deliberately. Leaving the car tears the
+     * service down moments after playback pauses, and an ordinary write would be
+     * cancelled with the service's scope - losing the one record that survives a
+     * failed upload.
+     */
+    private suspend fun report(snapshot: ProgressSnapshot) {
+        val parts = snapshot.mediaId.split(":", limit = 3)
+        if (parts.size != 3) return
+        withContext(NonCancellable) {
+            runCatching { app.settings.saveLastPlayed(snapshot.mediaId, snapshot.positionMs) }
+        }
+        val positionSec = snapshot.positionMs / 1000.0
+        withContext(NonCancellable + Dispatchers.IO) {
+            runCatching {
+                if (!repo.ensureConfigured()) return@runCatching
+                when {
+                    snapshot.mediaId.startsWith(EPISODE_PREFIX) -> {
+                        val durationSec =
+                            if (snapshot.durationMs != C.TIME_UNSET) snapshot.durationMs / 1000.0 else 0.0
+                        repo.updateProgress(parts[1], parts[2], positionSec, durationSec)
                     }
+
+                    // Book progress is reported against the whole book timeline.
+                    snapshot.mediaId.startsWith(TRACK_PREFIX) ->
+                        repo.updateProgress(
+                            parts[1],
+                            "",
+                            snapshot.trackStartOffset + positionSec,
+                            snapshot.bookDuration,
+                        )
                 }
             }
         }
@@ -561,15 +603,15 @@ class PlaybackService : MediaLibraryService() {
             controller: MediaSession.ControllerInfo,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> =
             serviceScope.future {
-                val (mediaId, storedPositionMs) = app.settings.lastPlayed()
+                val last = app.settings.lastPlayed()
                     ?: throw UnsupportedOperationException("Nothing to resume")
                 withContext(Dispatchers.IO) {
-                    if (mediaId.startsWith(TRACK_PREFIX)) {
-                        bookQueueFor(mediaId, storedPositionMs)
+                    if (last.mediaId.startsWith(TRACK_PREFIX)) {
+                        bookQueueFor(last.mediaId, last.positionMs)
                     } else {
-                        val serverPositionMs = savedPositionMs(mediaId)
-                        val position = if (serverPositionMs != C.TIME_UNSET) serverPositionMs else storedPositionMs
-                        podcastQueueFor(mediaId, position)
+                        // C.TIME_UNSET so savedPositionMs picks between the
+                        // server's position and the locally recorded one.
+                        podcastQueueFor(last.mediaId, C.TIME_UNSET)
                     }
                 }
             }
@@ -734,11 +776,24 @@ class PlaybackService : MediaLibraryService() {
         return queue
     }
 
-    /** Looks up the server-side resume position for an episode media id. */
+    /**
+     * Resume position for an episode media id.
+     *
+     * Normally the server is the source of truth, since it also sees other
+     * devices. But an upload can fail - no signal in the car, or the service
+     * torn down mid-request - and then the server still holds the position from
+     * before the drive. So the locally recorded position wins whenever it was
+     * taken after the server's own last update, which is the only way the app
+     * can tell "the server is ahead of me" from "the server never heard me".
+     */
     private suspend fun savedPositionMs(mediaId: String): Long {
         val parts = mediaId.split(":", limit = 3)
         if (parts.size != 3) return C.TIME_UNSET
-        val progress = runCatching { repo.progress(parts[1], parts[2]) }.getOrNull() ?: return C.TIME_UNSET
+        val local = runCatching { app.settings.lastPlayed() }.getOrNull()
+            ?.takeIf { it.mediaId == mediaId }
+        val progress = runCatching { repo.progress(parts[1], parts[2]) }.getOrNull()
+            ?: return local?.positionMs ?: C.TIME_UNSET
+        if (local != null && local.updatedAtMs > progress.lastUpdate) return local.positionMs
         if (progress.isFinished) return 0L
         return (progress.currentTime * 1000).toLong()
     }

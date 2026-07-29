@@ -22,6 +22,13 @@ data class Credentials(
     val isLoggedIn: Boolean get() = serverUrl.isNotBlank() && token.isNotBlank()
 }
 
+/** The locally recorded playback position, with the wall clock time it was taken. */
+data class LastPlayed(
+    val mediaId: String,
+    val positionMs: Long,
+    val updatedAtMs: Long,
+)
+
 class SettingsStore(private val context: Context) {
 
     private object Keys {
@@ -35,6 +42,7 @@ class SettingsStore(private val context: Context) {
         val pendingOidcCookies = stringPreferencesKey("pending_oidc_cookies")
         val lastPlayedMediaId = stringPreferencesKey("last_played_media_id")
         val lastPlayedPositionMs = longPreferencesKey("last_played_position_ms")
+        val lastPlayedUpdatedAt = longPreferencesKey("last_played_updated_at")
         val autoPlay = booleanPreferencesKey("auto_play")
         val normalizeAudio = booleanPreferencesKey("normalize_audio")
         val downloadLocation = stringPreferencesKey("download_location")
@@ -120,18 +128,31 @@ class SettingsStore(private val context: Context) {
         return Triple(server, verifier, prefs[Keys.pendingOidcCookies] ?: "")
     }
 
-    /** Remembers the most recent episode for Android Auto playback resumption. */
-    suspend fun saveLastPlayed(mediaId: String, positionMs: Long) {
+    /**
+     * Remembers the most recent episode for Android Auto playback resumption.
+     * [updatedAtMs] is what lets a resume tell this apart from the server's own
+     * record when a progress upload didn't make it.
+     */
+    suspend fun saveLastPlayed(
+        mediaId: String,
+        positionMs: Long,
+        updatedAtMs: Long = System.currentTimeMillis(),
+    ) {
         context.dataStore.edit { prefs ->
             prefs[Keys.lastPlayedMediaId] = mediaId
             prefs[Keys.lastPlayedPositionMs] = positionMs
+            prefs[Keys.lastPlayedUpdatedAt] = updatedAtMs
         }
     }
 
-    suspend fun lastPlayed(): Pair<String, Long>? {
+    suspend fun lastPlayed(): LastPlayed? {
         val prefs = context.dataStore.data.first()
         val mediaId = prefs[Keys.lastPlayedMediaId] ?: return null
-        return mediaId to (prefs[Keys.lastPlayedPositionMs] ?: 0L)
+        return LastPlayed(
+            mediaId = mediaId,
+            positionMs = prefs[Keys.lastPlayedPositionMs] ?: 0L,
+            updatedAtMs = prefs[Keys.lastPlayedUpdatedAt] ?: 0L,
+        )
     }
 
     suspend fun clearPendingOidc() {
